@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 from logpilot.config import load_config
 from logpilot.history import list_history_runs, load_history_run
 from logpilot.pipeline import run_scan
+import logpilot.web as web_module
 from logpilot.web import _html, build_server
 
 
@@ -156,6 +157,32 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(run_payload["metadata"]["run_id"], run_id)
                 self.assertIn("patch", run_payload)
             finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_web_browse_endpoint_returns_selected_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            original_choose_directory = web_module.choose_directory
+            web_module.choose_directory = lambda initial_dir: repo
+            server = build_server(repo, port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                request = urllib.request.Request(
+                    f"http://{host}:{port}/api/browse",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertFalse(payload["cancelled"])
+                self.assertEqual(payload["path"], str(repo))
+            finally:
+                web_module.choose_directory = original_choose_directory
                 server.shutdown()
                 server.server_close()
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +17,7 @@ from .pipeline import run_scan
 def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
     initial_root = repo_root.resolve()
     state = {"repo_root": initial_root, "artifacts": initial_root / ".logpilot"}
+    browse_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -70,6 +73,12 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_browse(self) -> None:
+            if not browse_lock.acquire(blocking=False):
+                self._send_json(
+                    {"error": "A repository picker is already open. Close it or wait for it to finish."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
             try:
                 selected = choose_directory(state["repo_root"])
                 if not selected:
@@ -78,6 +87,8 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                 self._send_json({"cancelled": False, "path": str(selected)})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            finally:
+                browse_lock.release()
 
         def _send_history_run(self, query: str) -> None:
             run_ids = parse_qs(query).get("run_id", [])
@@ -130,56 +141,52 @@ def serve(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
 
 
 def choose_directory(initial_dir: Path) -> Path | None:
-    if os.name == "nt":
-        try:
-            return _choose_directory_windows(initial_dir)
-        except RuntimeError:
-            pass
-    return _choose_directory_tk(initial_dir)
+    return _choose_directory_tk_subprocess(initial_dir)
 
 
-def _choose_directory_windows(initial_dir: Path) -> Path | None:
-    script = r"""
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = "选择 LogPilot 要分析的仓库"
-$dialog.SelectedPath = $env:LOGPILOT_INITIAL_DIR
-$dialog.ShowNewFolderButton = $false
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-  Write-Output $dialog.SelectedPath
-}
-"""
-    env = os.environ.copy()
-    env["LOGPILOT_INITIAL_DIR"] = str(initial_dir)
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
+def _choose_directory_tk_subprocess(initial_dir: Path, timeout_seconds: int = 120) -> Path | None:
+    script = r'''
+import sys
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
+
+initial_dir = sys.argv[1]
+root = tk.Tk()
+root.withdraw()
+root.update()
+root.attributes("-topmost", True)
+try:
+    selected = filedialog.askdirectory(
+        parent=root,
+        initialdir=initial_dir,
+        title="选择 LogPilot 要分析的仓库",
+        mustexist=True,
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Windows folder picker failed.")
-    selected = result.stdout.strip()
-    return Path(selected).resolve() if selected else None
-
-
-def _choose_directory_tk(initial_dir: Path) -> Path | None:
-    import tkinter as tk
-    from tkinter import filedialog
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
+    if selected:
+        print(Path(selected).resolve())
+finally:
+    root.destroy()
+'''
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
-        selected = filedialog.askdirectory(
-            parent=root,
-            initialdir=str(initial_dir),
-            title="Select repository for LogPilot analysis",
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(initial_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            check=False,
+            timeout=timeout_seconds,
         )
-    finally:
-        root.destroy()
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Folder picker timed out. Type the path manually or try again.") from exc
+
+    if result.returncode != 0:
+        message = result.stderr.strip() or "Folder picker failed. Type the path manually or try again."
+        raise RuntimeError(message)
+    selected = result.stdout.strip()
     return Path(selected).resolve() if selected else None
 
 
@@ -462,8 +469,10 @@ def _html() -> str:
       if (state.browsing) return;
       setBrowsing(true);
       statusLine.textContent = "正在打开文件夹选择窗口...";
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 125000);
       try {
-        const response = await fetch("/api/browse", { method: "POST" });
+        const response = await fetch("/api/browse", { method: "POST", signal: controller.signal });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "选择仓库失败");
         if (payload.cancelled) {
@@ -473,8 +482,10 @@ def _html() -> str:
         repoPath.value = payload.path;
         statusLine.textContent = `已选择仓库：${payload.path}`;
       } catch (error) {
-        statusLine.textContent = `选择失败：${error.message}`;
+        const message = error.name === "AbortError" ? "选择窗口超时，请手动输入路径或重试。" : error.message;
+        statusLine.textContent = `选择失败：${message}`;
       } finally {
+        clearTimeout(timeoutId);
         setBrowsing(false);
       }
     }
