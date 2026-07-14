@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from .ai import AiProvider, analyze_with_ai
+from .config import load_config
+from .patching import write_patch
+from .reporting import build_report, write_report
+from .rules import analyze_rules
+from .scanner import scan_repository
+
+
+def run_scan(repo_root: Path, output_dir: Path | None = None, config_path: Path | None = None, ai_provider: AiProvider | None = None):
+    repo_root = repo_root.resolve()
+    config = load_config(repo_root, config_path)
+    logs, files_scanned = scan_repository(repo_root, config.scan)
+    rule_issues = analyze_rules(repo_root, logs, config.rules)
+    ai_issues, ai_traces = analyze_with_ai(logs, config.ai, ai_provider)
+    issues = rule_issues + ai_issues
+    report = build_report(repo_root, files_scanned, logs, issues, ai_traces)
+    out = output_dir or repo_root / ".logpilot"
+    write_report(report, out)
+    write_patch(repo_root, logs, issues, out)
+    return report

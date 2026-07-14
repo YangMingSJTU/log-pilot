@@ -1,0 +1,26 @@
+rules:
+  forbidden_logs:
+    - print
+    - console.log
+    - System.out.println
+  required_fields:
+    - request_id
+    - user_id
+  sensitive_fields:
+    - password
+    - token
+    - api_key
+
+ai:
+  enabled: false
+  provider: openai_compatible
+  model: gpt-4.1-mini
+
+scan:
+  exclude:
+    - .git
+    - .logpilot
+    - node_modules
+    - .venv
+    - dist
+    - build

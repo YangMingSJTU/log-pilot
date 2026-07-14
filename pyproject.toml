@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logpilot"
+version = "0.1.0"
+description = "Local AI-assisted log quality scanner and review console."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "LogPilot contributors" }]
+dependencies = []
+
+[project.optional-dependencies]
+ai = []
+dev = []
+web = []
+
+[project.scripts]
+logpilot = "logpilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
