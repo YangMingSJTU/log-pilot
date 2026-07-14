@@ -253,72 +253,106 @@ def _html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LogPilot 本地分析工作台</title>
   <style>
-    /* Compact operations-console layout inspired by the supplied reference. */
+    /* Compact developer console with a shared component language. */
     :root {
       color-scheme: dark;
       --bg: #09090a;
-      --surface: #101011;
+      --surface: #0f0f11;
       --surface-2: #141416;
-      --surface-3: #1a1a1d;
+      --surface-3: #19191c;
+      --elevated: #1d1d21;
       --ink: #f4f4f5;
       --muted: #a1a1aa;
       --subtle: #71717a;
-      --line: #343438;
-      --line-soft: #242427;
-      --blue: #8b5cf6;
-      --blue-strong: #6d28d9;
+      --line: #2b2b30;
+      --line-soft: #222226;
+      --line-strong: #3d3d44;
+      --accent: #8b5cf6;
+      --accent-strong: #7c3aed;
+      --accent-hover: #9568f7;
+      --accent-soft: rgba(139, 92, 246, .12);
+      --blue: #60a5fa;
       --green: #34d399;
       --amber: #fbbf24;
       --red: #fb7185;
-      --purple: #a78bfa;
-      --code: #08080a;
+      --code: #070708;
     }
     * { box-sizing: border-box; }
+    * { scrollbar-width: thin; scrollbar-color: #3f3f46 transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: #3f3f46; background-clip: padding-box; }
+    *::-webkit-scrollbar-track { background: transparent; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--ink);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
     }
     button, input, select { font: inherit; }
+    button, input, .runtime-control, .nav-item, .issue-row {
+      transition: border-color .14s ease, background-color .14s ease, color .14s ease, box-shadow .14s ease;
+    }
     button {
-      height: 40px;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
       padding: 0 14px;
-      border: 1px solid transparent;
-      border-radius: 4px;
-      background: var(--blue-strong);
+      border: 1px solid #9f7aea;
+      border-radius: 6px;
+      background: var(--accent-strong);
       color: #fff;
-      font-size: 13px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 1px 2px rgba(0, 0, 0, .35);
+      font-size: 12px;
       font-weight: 650;
       cursor: pointer;
       white-space: nowrap;
     }
-    button:hover { background: #7c3aed; }
+    button:hover { border-color: #b69af0; background: var(--accent-hover); }
+    button:active { box-shadow: inset 0 1px 2px rgba(0, 0, 0, .28); }
     button:disabled { opacity: .58; cursor: wait; }
     button:focus-visible, input:focus-visible, select:focus-visible {
-      outline: 2px solid var(--purple);
-      outline-offset: 2px;
+      outline: 0;
+      box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgba(167, 139, 250, .72);
     }
     .secondary {
-      background: transparent;
-      border: 1px solid #47474d;
+      background: var(--surface-3);
+      border: 1px solid var(--line-strong);
       color: var(--ink);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04), 0 1px 2px rgba(0, 0, 0, .22);
     }
-    .secondary:hover { background: #1d1d20; }
+    .secondary:hover { border-color: #575760; background: #232328; }
+    .icon {
+      width: 15px;
+      height: 15px;
+      flex: 0 0 auto;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
     .app-shell {
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
       display: grid;
       grid-template-columns: 232px minmax(0, 1fr);
       grid-template-rows: 64px minmax(0, 1fr);
+      overflow: hidden;
     }
     .sidebar {
       grid-column: 1;
       grid-row: 1 / -1;
-      min-height: 100vh;
+      min-height: 0;
+      height: 100vh;
+      height: 100dvh;
       display: grid;
-      grid-template-rows: 64px auto 1fr auto;
+      grid-template-rows: 64px 1fr auto;
       border-right: 1px solid var(--line);
-      background: #111112;
+      background: #0c0c0d;
+      overflow: hidden;
     }
     .brand {
       min-width: 0;
@@ -334,68 +368,47 @@ def _html() -> str:
       height: 28px;
       display: grid;
       place-items: center;
-      border-radius: 5px;
-      background: var(--ink);
-      color: #151517;
+      border: 1px solid #e4e4e7;
+      border-radius: 7px;
+      background: #f4f4f5;
+      color: #18181b;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .45);
       font-size: 11px;
       font-weight: 900;
     }
-    .sidebar-context {
-      display: grid;
-      gap: 8px;
-      padding: 24px 20px 18px;
-    }
-    .sidebar-context strong {
-      overflow: hidden;
-      color: #fff;
-      font-size: 15px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .eyebrow {
-      color: var(--purple);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-    }
     .side-nav {
+      min-height: 0;
       display: grid;
       align-content: start;
       gap: 4px;
-      padding: 0 12px;
+      padding: 20px 12px 0;
+      overflow-y: auto;
     }
     .nav-item {
       width: 100%;
       display: grid;
-      grid-template-columns: 20px 1fr auto;
+      grid-template-columns: 20px 1fr;
       gap: 10px;
       align-items: center;
       justify-items: start;
       padding: 0 12px;
       background: transparent;
       border: 1px solid transparent;
-      border-radius: 4px;
+      border-radius: 7px;
       color: var(--muted);
       text-align: left;
+      box-shadow: none;
     }
-    .nav-item:hover { background: #19191b; color: var(--ink); }
+    .nav-item:hover { border-color: transparent; background: #18181b; color: var(--ink); }
     .nav-item.active {
-      background: #35105e;
-      border-color: #4c177d;
+      background: var(--accent-soft);
+      border-color: rgba(139, 92, 246, .28);
       color: #fff;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
     }
-    .nav-icon { color: currentColor; font-size: 16px; }
-    .nav-count {
-      min-width: 22px;
-      padding: 1px 6px;
-      border: 1px solid #45454a;
-      border-radius: 999px;
-      color: var(--muted);
-      font-size: 10px;
-      text-align: center;
-    }
-    .nav-item.active .nav-count { border-color: #7e3ab2; color: #eee3ff; }
+    .nav-icon { width: 18px; height: 18px; display: grid; place-items: center; color: var(--subtle); }
+    .nav-icon .icon { width: 16px; height: 16px; }
+    .nav-item.active .nav-icon { color: #bca7fb; }
     .sidebar-footer {
       display: flex;
       align-items: center;
@@ -418,27 +431,13 @@ def _html() -> str:
       grid-row: 1;
       min-height: 64px;
       display: grid;
-      grid-template-columns: minmax(130px, .45fr) minmax(300px, 1.3fr) 180px auto;
+      grid-template-columns: minmax(360px, 1fr) 180px auto;
       gap: 12px;
       align-items: center;
       padding: 11px 22px;
       border-bottom: 1px solid var(--line);
       background: #0d0d0e;
       backdrop-filter: none;
-    }
-    .breadcrumb {
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--subtle);
-      font-size: 12px;
-    }
-    .breadcrumb strong {
-      overflow: hidden;
-      color: var(--ink);
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
     .repo-control {
       min-width: 0;
@@ -449,28 +448,32 @@ def _html() -> str:
     }
     input {
       width: 100%;
-      height: 40px;
+      height: 38px;
       padding: 0 12px;
-      border: 1px solid #414146;
-      border-radius: 4px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
       background: #111113;
       color: var(--ink);
       font-size: 13px;
       outline: none;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, .28);
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    input:focus { border-color: var(--purple); box-shadow: none; }
+    input:hover { border-color: #505058; }
+    input:focus { border-color: #8b5cf6; }
     .runtime-control {
       min-width: 0;
-      height: 40px;
+      height: 38px;
       display: grid;
       grid-template-columns: 8px minmax(0, 1fr);
       gap: 8px;
       align-items: center;
       padding: 0 8px 0 11px;
-      border: 1px solid #414146;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
       background: #111113;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
     }
     .runtime-control .state-dot.offline {
       background: var(--red);
@@ -491,68 +494,38 @@ def _html() -> str:
       grid-column: 2;
       grid-row: 2;
       min-width: 0;
+      min-height: 0;
       padding: 0;
       display: block;
       overflow: auto;
     }
-    .page-header {
-      min-height: 154px;
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 24px;
-      padding: 30px 48px 26px;
-      border-bottom: 1px solid var(--line);
+    .view-panel {
+      width: 100%;
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 30px 48px 44px;
     }
-    .page-header h1 {
-      margin: 8px 0 7px;
-      font-size: 30px;
-      line-height: 1.15;
-      font-weight: 720;
-      letter-spacing: 0;
-    }
-    .page-path {
-      max-width: 720px;
-      margin: 0;
-      overflow: hidden;
-      color: var(--muted);
-      font-size: 12px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .engine-state {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
-      color: var(--muted);
-      font-size: 11px;
-      white-space: nowrap;
-    }
-    .view-panel { padding: 30px 48px 44px; }
     .summary-section {
-      border: 1px solid var(--line);
-      background: #0d0d0e;
+      border: 0;
+      background: transparent;
     }
     .summary-grid {
       display: grid;
       grid-template-columns: 1.25fr repeat(4, minmax(108px, 1fr));
-      gap: 0;
+      gap: 10px;
     }
     .score-panel, .metric {
-      min-height: 104px;
+      min-height: 96px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      gap: 14px;
+      gap: 12px;
       padding: 16px 18px;
-      border: 0;
-      border-right: 1px solid var(--line-soft);
-      border-radius: 0;
-      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025), 0 1px 2px rgba(0, 0, 0, .16);
     }
-    .summary-grid > :last-child { border-right: 0; }
     .metric-label {
       color: var(--muted);
       font-size: 11px;
@@ -566,15 +539,16 @@ def _html() -> str:
       font-weight: 720;
     }
     .score-line span { margin: 0; color: var(--muted); font-size: 11px; }
-    .score-track { height: 2px; background: #2a2a2e; overflow: hidden; }
+    .score-track { height: 3px; border-radius: 999px; background: #25252a; overflow: hidden; }
     .score-track i {
       display: block;
       width: calc(var(--score, 0) * 1%);
       height: 100%;
-      background: var(--purple);
+      background: var(--accent);
+      border-radius: inherit;
     }
     .metric span { margin: 0; }
-    .workspace-section { margin-top: 32px; }
+    .workspace-section { margin-top: 28px; }
     .section-bar {
       min-height: 48px;
       display: flex;
@@ -584,12 +558,15 @@ def _html() -> str:
       padding: 0 2px;
     }
     .section-title { display: flex; align-items: baseline; gap: 10px; }
+    .section-actions { display: flex; align-items: center; gap: 16px; }
+    .compact-action { height: 32px; padding: 0 10px; font-size: 11px; }
     .section-bar h2, section .section-bar h2 {
       margin: 0;
       padding: 0;
       border: 0;
       background: none;
-      font-size: 17px;
+      font-size: 16px;
+      font-weight: 650;
     }
     .section-count { color: var(--muted); font-size: 11px; }
     .legend { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 10px; }
@@ -599,11 +576,14 @@ def _html() -> str:
     .legend .medium-dot { background: var(--amber); }
     .legend .low-dot { background: var(--green); }
     .analysis-workspace {
-      height: max(500px, calc(100vh - 428px));
+      height: max(420px, calc(100dvh - 324px));
       display: grid;
       grid-template-columns: minmax(320px, .82fr) minmax(470px, 1.18fr);
       border: 1px solid var(--line);
-      background: #0d0d0e;
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02), 0 2px 8px rgba(0, 0, 0, .14);
+      overflow: hidden;
     }
     .issue-pane, .detail {
       min-width: 0;
@@ -623,7 +603,7 @@ def _html() -> str:
       color: var(--muted);
       font-size: 10px;
       font-weight: 700;
-      letter-spacing: .06em;
+      letter-spacing: 0;
     }
     .list { flex: 1; max-height: none; overflow: auto; }
     .issue-row {
@@ -645,8 +625,8 @@ def _html() -> str:
     }
     .issue-row:hover { background: #171719; }
     .issue-row.active {
-      background: #20112f;
-      box-shadow: inset 2px 0 0 var(--purple);
+      background: var(--accent-soft);
+      box-shadow: inset 2px 0 0 #a78bfa;
     }
     .issue-title { display: block; margin: 0 0 7px; font-size: 13px; font-weight: 650; }
     .meta, .muted { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
@@ -654,16 +634,16 @@ def _html() -> str:
       display: inline-block;
       min-width: 32px;
       padding: 2px 6px;
-      border-radius: 3px;
-      color: #fff;
+      border: 1px solid currentColor;
+      border-radius: 999px;
       font-size: 10px;
-      line-height: 18px;
+      line-height: 16px;
       text-align: center;
     }
-    .high { background: #6c2630; }
-    .medium { background: #694c14; }
-    .low { background: #16513b; }
-    .debug { background: #47306d; }
+    .high { background: rgba(251, 113, 133, .10); color: #fb8fa2; }
+    .medium { background: rgba(251, 191, 36, .10); color: #f8ca55; }
+    .low { background: rgba(52, 211, 153, .10); color: #59dca9; }
+    .debug { background: rgba(96, 165, 250, .10); color: #7eb7fb; }
     .detail { min-height: 0; }
     .detail-body {
       flex: 0 0 auto;
@@ -673,7 +653,7 @@ def _html() -> str:
       gap: 13px;
       border-bottom: 1px solid var(--line);
       overflow: auto;
-      background: #0f0f11;
+      background: #101012;
     }
     .detail-body h3 { margin: 0; font-size: 16px; }
     .kv { display: grid; grid-template-columns: 58px 1fr; gap: 8px; font-size: 12px; line-height: 1.55; }
@@ -681,28 +661,28 @@ def _html() -> str:
     .section-tabs {
       flex: 0 0 auto;
       display: flex;
-      gap: 18px;
-      padding: 0 18px;
+      gap: 3px;
+      padding: 5px 12px;
       border-top: 1px solid var(--line-soft);
       border-bottom: 1px solid var(--line);
-      background: #121214;
+      background: var(--surface-2);
     }
     .mini-tab {
-      height: 40px;
-      padding: 0;
+      height: 30px;
+      padding: 0 10px;
       border: 0;
-      border-bottom: 2px solid transparent;
-      border-radius: 0;
+      border-radius: 5px;
       background: transparent;
       color: var(--muted);
       font-size: 11px;
+      box-shadow: none;
     }
-    .mini-tab:hover { background: transparent; color: var(--ink); }
+    .mini-tab:hover { border-color: transparent; background: #1d1d21; color: var(--ink); }
     .mini-tab.active {
       border: 0;
-      border-bottom: 2px solid var(--purple);
-      background: transparent;
+      background: #272230;
       color: #fff;
+      box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .22), 0 1px 2px rgba(0, 0, 0, .24);
     }
     pre {
       flex: 1;
@@ -717,7 +697,12 @@ def _html() -> str:
       line-height: 1.6;
     }
     .empty { padding: 24px 16px; color: var(--muted); font-size: 12px; }
-    .history-table { border: 1px solid var(--line); background: #0d0d0e; }
+    .history-table {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
     .history-header {
       display: grid;
       grid-template-columns: minmax(260px, 1.5fr) 90px 1fr 92px;
@@ -729,7 +714,7 @@ def _html() -> str:
       color: var(--muted);
       font-size: 10px;
       font-weight: 700;
-      letter-spacing: .05em;
+      letter-spacing: 0;
     }
     .history-list { max-height: none; overflow: auto; }
     .history-row {
@@ -756,7 +741,8 @@ def _html() -> str:
       padding: 18px 20px;
       border: 1px solid var(--line);
       border-bottom: 0;
-      background: #0d0d0e;
+      border-radius: 8px 8px 0 0;
+      background: var(--surface);
     }
     .runtime-machine { display: flex; align-items: center; gap: 14px; min-width: 0; }
     .machine-icon {
@@ -765,13 +751,19 @@ def _html() -> str:
       display: grid;
       place-items: center;
       border: 1px solid var(--line);
-      background: #151517;
+      border-radius: 7px;
+      background: var(--surface-2);
       color: var(--ink);
       font-size: 20px;
     }
     .runtime-machine h2 { margin: 0 0 5px; font-size: 16px; }
     .runtime-machine p { margin: 0; color: var(--muted); font-size: 11px; }
-    .runtime-table { border: 1px solid var(--line); background: #0d0d0e; }
+    .runtime-table {
+      border: 1px solid var(--line);
+      border-radius: 0 0 8px 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
     .runtime-header, .runtime-row {
       display: grid;
       grid-template-columns: minmax(180px, .8fr) 120px minmax(180px, .8fr) minmax(260px, 1.5fr);
@@ -797,8 +789,8 @@ def _html() -> str:
       color: var(--ink);
       text-align: left;
     }
-    button.runtime-row:hover { background: #171719; }
-    button.runtime-row.selected { box-shadow: inset 2px 0 0 var(--purple); background: #17111f; }
+    button.runtime-row:hover { border-color: var(--line-soft); background: #171719; }
+    button.runtime-row.selected { box-shadow: inset 2px 0 0 var(--accent); background: var(--accent-soft); }
     button.runtime-row:disabled { opacity: 1; cursor: default; }
     .runtime-row:last-child { border-bottom: 0; }
     .runtime-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -807,15 +799,17 @@ def _html() -> str:
       height: 30px;
       display: grid;
       place-items: center;
-      border: 1px solid #45454a;
-      background: #18181b;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--surface-3);
       font-size: 11px;
       font-weight: 750;
     }
     .runtime-name strong { font-size: 13px; }
     .runtime-badge {
       padding: 2px 5px;
-      border: 1px solid #45454a;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
       color: var(--muted);
       font-size: 9px;
     }
@@ -830,6 +824,63 @@ def _html() -> str:
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .diagnostics-section {
+      margin-top: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .diagnostics-header {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px 18px;
+    }
+    .diagnostics-copy h2 { margin: 0 0 5px; font-size: 14px; }
+    .diagnostics-copy p { margin: 0; color: var(--muted); font-size: 11px; }
+    .diagnostics-output {
+      max-height: 320px;
+      border-top: 1px solid var(--line);
+      background: var(--code);
+      flex: none;
+    }
+    .dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, .66);
+      backdrop-filter: blur(3px);
+    }
+    .dialog {
+      width: min(940px, 100%);
+      max-height: calc(100dvh - 48px);
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--surface-2);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, .62);
+      overflow: hidden;
+    }
+    .dialog-header {
+      flex: 0 0 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px 0 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .dialog-title h2 { margin: 0 0 3px; font-size: 15px; }
+    .dialog-title p { margin: 0; color: var(--muted); font-size: 10px; }
+    .dialog pre { min-height: 320px; max-height: calc(100dvh - 108px); flex: 1; }
+    .icon-only { width: 34px; height: 34px; padding: 0; }
     .toast-region {
       position: fixed;
       top: 82px;
@@ -847,10 +898,10 @@ def _html() -> str:
       align-items: center;
       padding: 11px 14px 11px 12px;
       border: 1px solid #3f3f46;
-      border-radius: 4px;
-      background: #1a1a1d;
+      border-radius: 8px;
+      background: var(--surface-3);
       color: var(--ink);
-      box-shadow: 0 14px 34px rgba(0, 0, 0, .44);
+      box-shadow: 0 18px 46px rgba(0, 0, 0, .52), inset 0 1px 0 rgba(255, 255, 255, .04);
       pointer-events: auto;
       animation: toast-in .18s ease-out;
     }
@@ -881,15 +932,16 @@ def _html() -> str:
       .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
       .topbar, main { grid-column: 2; }
       .topbar { grid-template-columns: minmax(0, 1fr) auto; }
-      .breadcrumb { display: none; }
       .runtime-control { display: none; }
-      .page-header, .view-panel { padding-left: 28px; padding-right: 28px; }
+      .view-panel { padding-left: 28px; padding-right: 28px; }
       .analysis-workspace { grid-template-columns: minmax(300px, .85fr) minmax(410px, 1.15fr); }
     }
     @media (max-width: 820px) {
-      .app-shell { display: block; }
+      body { overflow: auto; }
+      .app-shell { height: auto; min-height: 100dvh; display: block; overflow: visible; }
       .sidebar {
         min-height: 0;
+        height: auto;
         display: grid;
         grid-template-columns: auto 1fr;
         grid-template-rows: 64px;
@@ -897,17 +949,15 @@ def _html() -> str:
         border-bottom: 1px solid var(--line);
       }
       .brand { border-bottom: 0; }
-      .sidebar-context, .sidebar-footer { display: none; }
+      .sidebar-footer { display: none; }
       .side-nav { display: flex; justify-content: flex-end; align-items: center; padding: 0 14px; }
-      .nav-item { width: auto; grid-template-columns: 18px auto auto; }
+      .nav-item { width: auto; grid-template-columns: 18px auto; }
       .topbar {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         padding: 10px 16px;
       }
       main { overflow: visible; }
-      .page-header { min-height: 132px; padding: 24px 20px; }
-      .page-header h1 { font-size: 26px; }
       .view-panel { padding: 22px 20px 32px; }
       .analysis-workspace { height: auto; grid-template-columns: 1fr; }
       .issue-pane { height: 390px; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -919,23 +969,21 @@ def _html() -> str:
       .runtime-header { display: none; }
       .runtime-row { grid-template-columns: minmax(150px, 1fr) auto; }
       .runtime-row .runtime-value { display: none; }
+      .section-actions { gap: 8px; }
+      .legend { display: none; }
     }
     @media (max-width: 560px) {
       .sidebar { grid-template-columns: 1fr; grid-template-rows: 56px auto; }
       .brand { height: 56px; padding: 0 16px; }
       .side-nav { justify-content: stretch; padding: 8px; border-top: 1px solid var(--line-soft); }
       .nav-item { flex: 1; justify-items: center; grid-template-columns: 18px auto; }
-      .nav-count { display: none; }
       .topbar { grid-template-columns: 1fr; }
       .repo-control { grid-template-columns: 1fr auto; }
       #scanButton { width: 100%; }
-      .engine-state { display: none; }
       .summary-grid { grid-template-columns: 1fr 1fr; }
       .score-panel { grid-column: 1 / -1; }
-      .summary-grid > * { border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
-      .summary-grid > :nth-child(2n + 1) { border-right: 0; }
-      .summary-grid > :nth-last-child(-n + 2) { border-bottom: 0; }
-      .legend { display: none; }
+      .summary-grid > * { border: 1px solid var(--line); }
+      .compact-action span { display: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       .toast, .toast.leaving { animation: none; }
@@ -946,45 +994,35 @@ def _html() -> str:
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark" aria-hidden="true">LP</span><strong>LogPilot</strong></div>
-      <div class="sidebar-context">
-        <span class="eyebrow">当前仓库</span>
-        <strong id="sidebarRepoName">未选择仓库</strong>
-      </div>
       <nav class="side-nav" aria-label="主要导航">
-        <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true">◎</span><span>分析概览</span></button>
-        <button class="nav-item" id="historyTab" type="button"><span class="nav-icon" aria-hidden="true">◷</span><span>历史记录</span><span class="nav-count" id="historyCount">0</span></button>
-        <button class="nav-item" id="runtimeTab" type="button"><span class="nav-icon" aria-hidden="true">▣</span><span>运行时</span><span class="nav-count" id="runtimeCount">0</span></button>
+        <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span><span>分析概览</span></button>
+        <button class="nav-item" id="historyTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span><span>历史记录</span></button>
+        <button class="nav-item" id="settingsTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span><span>设置</span></button>
       </nav>
       <div class="sidebar-footer"><span class="local-dot"></span><span>本地模式</span></div>
     </aside>
     <header class="topbar">
-      <div class="breadcrumb"><span>LogPilot</span><span>/</span><strong id="headerRepoName">未选择仓库</strong></div>
       <div class="repo-control">
         <input id="repoPath" type="text" spellcheck="false" aria-label="仓库路径" placeholder="D:\\GitHub\\log-pilot">
-        <button class="secondary" id="browseButton" type="button">选择仓库</button>
+        <button class="secondary" id="browseButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><span>选择仓库</span></button>
       </div>
       <label class="runtime-control" title="选择执行日志分析的本机运行时">
         <span class="state-dot offline" id="runtimeDot"></span>
         <select id="runtimeSelect" aria-label="分析运行时"><option value="">检测运行时...</option></select>
       </label>
-      <button id="scanButton" type="button">开始分析</button>
+      <button id="scanButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 3 14 9-14 9z"/></svg><span>开始分析</span></button>
     </header>
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
     <main>
-      <section class="page-header">
-        <div>
-          <div class="eyebrow" id="pageEyebrow">仓库分析</div>
-          <h1 id="pageTitle">分析概览</h1>
-          <p class="page-path" id="pageRepoPath">选择一个本地仓库开始分析</p>
-        </div>
-        <div class="engine-state"><span class="state-dot"></span><span id="engineLabel">规则引擎已就绪</span></div>
-      </section>
       <div class="view-panel" id="currentPanel">
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
         <section class="workspace-section">
           <div class="section-bar">
-            <div class="section-title"><h2>问题清单</h2><span class="section-count" id="issueCountLabel">等待分析</span></div>
-            <div class="legend"><span><i class="high-dot"></i>高风险</span><span><i class="medium-dot"></i>中风险</span><span><i class="low-dot"></i>低风险</span></div>
+            <div class="section-title"><h2>问题清单</h2></div>
+            <div class="section-actions">
+              <div class="legend"><span><i class="high-dot"></i>高风险</span><span><i class="medium-dot"></i>中风险</span><span><i class="low-dot"></i>低风险</span></div>
+              <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
+            </div>
           </div>
           <div class="analysis-workspace">
             <section class="issue-pane">
@@ -992,12 +1030,11 @@ def _html() -> str:
               <div class="list" id="issues"></div>
             </section>
             <section class="detail">
-              <div class="pane-heading"><span>问题详情</span><span>规则建议</span></div>
+              <div class="pane-heading"><span>问题详情</span><span>处理建议</span></div>
             <div class="detail-body" id="issueDetail"></div>
             <div class="section-tabs">
-              <button class="mini-tab active" id="patchTab" type="button">补丁预览</button>
-              <button class="mini-tab" id="logsTab" type="button">日志调用</button>
-              <button class="mini-tab" id="aiTab" type="button">模型调试</button>
+              <button class="mini-tab active" id="sourceTab" type="button">相关代码</button>
+              <button class="mini-tab" id="patchTab" type="button">修改预览</button>
             </div>
             <pre id="detailPre">等待分析结果</pre>
             </section>
@@ -1011,20 +1048,37 @@ def _html() -> str:
           <div class="history-list" id="historyList"></div>
         </div>
       </section>
-      <section id="runtimePanel" class="view-panel hidden">
+      <section id="settingsPanel" class="view-panel hidden">
+        <div class="section-bar"><div class="section-title"><h2>运行时</h2><span class="section-count">选择日志分析使用的本机执行环境</span></div></div>
         <div class="runtime-overview">
           <div class="runtime-machine">
-            <span class="machine-icon" aria-hidden="true">▣</span>
+            <span class="machine-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg></span>
             <div><h2>本机运行环境</h2><p id="runtimeSummary">正在检测可用的命令行运行时</p></div>
           </div>
-          <button class="secondary" id="refreshRuntimesButton" type="button">刷新状态</button>
+          <button class="secondary" id="refreshRuntimesButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span>刷新状态</span></button>
         </div>
         <div class="runtime-table">
           <div class="runtime-header"><span>运行时</span><span>健康状态</span><span>版本</span><span>可执行文件</span></div>
           <div id="runtimeList"></div>
         </div>
+        <section class="diagnostics-section">
+          <div class="diagnostics-header">
+            <div class="diagnostics-copy"><h2>分析诊断</h2><p id="diagnosticsSummary">用于排查运行时分析异常</p></div>
+            <button class="secondary" id="diagnosticsToggle" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>查看诊断</span></button>
+          </div>
+          <pre class="diagnostics-output hidden" id="diagnosticsPre"></pre>
+        </section>
       </section>
     </main>
+  </div>
+  <div class="dialog-backdrop hidden" id="fullPatchDialog" role="dialog" aria-modal="true" aria-labelledby="fullPatchTitle">
+    <section class="dialog">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的全部安全修改，仅供审查，不会自动写入源码</p></div>
+        <button class="secondary icon-only" id="closePatchDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <pre id="fullPatchPre">暂无修改内容</pre>
+    </section>
   </div>
   <script>
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -1038,7 +1092,8 @@ def _html() -> str:
       report: null,
       patch: "",
       selectedIssueId: "",
-      detailMode: "patch",
+      detailMode: "source",
+      diagnosticsOpen: false,
       runtimes: [],
       selectedRuntime: "",
       activeView: "current"
@@ -1047,27 +1102,23 @@ def _html() -> str:
     const browseButton = document.querySelector("#browseButton");
     const scanButton = document.querySelector("#scanButton");
     const toastRegion = document.querySelector("#toastRegion");
-    const sidebarRepoName = document.querySelector("#sidebarRepoName");
-    const headerRepoName = document.querySelector("#headerRepoName");
-    const pageTitle = document.querySelector("#pageTitle");
-    const pageEyebrow = document.querySelector("#pageEyebrow");
-    const pageRepoPath = document.querySelector("#pageRepoPath");
-    const engineLabel = document.querySelector("#engineLabel");
-    const historyCount = document.querySelector("#historyCount");
-    const issueCountLabel = document.querySelector("#issueCountLabel");
     const currentTab = document.querySelector("#currentTab");
     const historyTab = document.querySelector("#historyTab");
-    const runtimeTab = document.querySelector("#runtimeTab");
+    const settingsTab = document.querySelector("#settingsTab");
     const currentPanel = document.querySelector("#currentPanel");
     const historyPanel = document.querySelector("#historyPanel");
-    const runtimePanel = document.querySelector("#runtimePanel");
+    const settingsPanel = document.querySelector("#settingsPanel");
     const runtimeSelect = document.querySelector("#runtimeSelect");
     const runtimeDot = document.querySelector("#runtimeDot");
-    const runtimeCount = document.querySelector("#runtimeCount");
     const refreshRuntimesButton = document.querySelector("#refreshRuntimesButton");
+    const sourceTab = document.querySelector("#sourceTab");
     const patchTab = document.querySelector("#patchTab");
-    const logsTab = document.querySelector("#logsTab");
-    const aiTab = document.querySelector("#aiTab");
+    const fullPatchButton = document.querySelector("#fullPatchButton");
+    const fullPatchDialog = document.querySelector("#fullPatchDialog");
+    const fullPatchPre = document.querySelector("#fullPatchPre");
+    const closePatchDialog = document.querySelector("#closePatchDialog");
+    const diagnosticsToggle = document.querySelector("#diagnosticsToggle");
+    const diagnosticsPre = document.querySelector("#diagnosticsPre");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
     browseButton.addEventListener("click", browseRepository);
@@ -1076,16 +1127,24 @@ def _html() -> str:
     });
     currentTab.addEventListener("click", () => showTab("current"));
     historyTab.addEventListener("click", () => showTab("history"));
-    runtimeTab.addEventListener("click", () => showTab("runtime"));
+    settingsTab.addEventListener("click", () => showTab("settings"));
     refreshRuntimesButton.addEventListener("click", () => loadRuntimes(true));
     runtimeSelect.addEventListener("change", () => {
       state.selectedRuntime = runtimeSelect.value;
       window.localStorage.setItem("logpilot.runtime", state.selectedRuntime);
       renderRuntimes();
     });
+    sourceTab.addEventListener("click", () => setDetailMode("source"));
     patchTab.addEventListener("click", () => setDetailMode("patch"));
-    logsTab.addEventListener("click", () => setDetailMode("logs"));
-    aiTab.addEventListener("click", () => setDetailMode("ai"));
+    fullPatchButton.addEventListener("click", openFullPatch);
+    closePatchDialog.addEventListener("click", closeFullPatch);
+    fullPatchDialog.addEventListener("click", event => {
+      if (event.target === fullPatchDialog) closeFullPatch();
+    });
+    diagnosticsToggle.addEventListener("click", toggleDiagnostics);
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !fullPatchDialog.classList.contains("hidden")) closeFullPatch();
+    });
 
     async function init() {
       try {
@@ -1209,7 +1268,8 @@ def _html() -> str:
       const response = await fetch("/api/patch");
       const text = await response.text();
       state.patch = response.ok ? text : "暂无补丁产物。";
-      renderDetailContent();
+      fullPatchButton.disabled = false;
+      fullPatchPre.textContent = state.patch;
     }
 
     async function loadHistoryRun(runId) {
@@ -1220,6 +1280,8 @@ def _html() -> str:
         if (!response.ok || payload.error) throw new Error(payload.error || "历史记录读取失败");
         renderReport(payload.report);
         state.patch = payload.patch || "暂无补丁产物。";
+        fullPatchButton.disabled = false;
+        fullPatchPre.textContent = state.patch;
         if (payload.metadata && payload.metadata.repository) {
           updateRepositoryIdentity(payload.metadata.repository);
         }
@@ -1253,32 +1315,46 @@ def _html() -> str:
       state.scanning = value;
       scanButton.disabled = value || !selectedRuntime();
       runtimeSelect.disabled = value;
-      scanButton.textContent = value ? "分析中..." : "开始分析";
+      scanButton.querySelector("span").textContent = value ? "分析中..." : "开始分析";
     }
 
     function setBrowsing(value) {
       state.browsing = value;
       browseButton.disabled = value;
-      browseButton.textContent = value ? "选择中..." : "选择仓库";
+      browseButton.querySelector("span").textContent = value ? "选择中..." : "选择仓库";
     }
 
     function setDetailMode(mode) {
       state.detailMode = mode;
+      sourceTab.classList.toggle("active", mode === "source");
       patchTab.classList.toggle("active", mode === "patch");
-      logsTab.classList.toggle("active", mode === "logs");
-      aiTab.classList.toggle("active", mode === "ai");
       renderDetailContent();
+    }
+
+    function openFullPatch() {
+      fullPatchPre.textContent = state.patch || "本次分析没有生成安全修改。";
+      fullPatchDialog.classList.remove("hidden");
+      closePatchDialog.focus();
+    }
+
+    function closeFullPatch() {
+      fullPatchDialog.classList.add("hidden");
+      fullPatchButton.focus();
+    }
+
+    function toggleDiagnostics() {
+      state.diagnosticsOpen = !state.diagnosticsOpen;
+      renderDiagnostics();
     }
 
     function showTab(name) {
       state.activeView = name;
       currentPanel.classList.toggle("hidden", name !== "current");
       historyPanel.classList.toggle("hidden", name !== "history");
-      runtimePanel.classList.toggle("hidden", name !== "runtime");
+      settingsPanel.classList.toggle("hidden", name !== "settings");
       currentTab.classList.toggle("active", name === "current");
       historyTab.classList.toggle("active", name === "history");
-      runtimeTab.classList.toggle("active", name === "runtime");
-      renderPageHeader();
+      settingsTab.classList.toggle("active", name === "settings");
     }
 
     function repositoryName(path) {
@@ -1287,34 +1363,7 @@ def _html() -> str:
     }
 
     function updateRepositoryIdentity(path) {
-      const name = repositoryName(path);
-      sidebarRepoName.textContent = name;
-      headerRepoName.textContent = name;
       state.path = path || state.path;
-      renderPageHeader();
-    }
-
-    function renderPageHeader() {
-      if (state.activeView === "runtime") {
-        pageEyebrow.textContent = "本机环境";
-        pageTitle.textContent = "运行时";
-        pageRepoPath.textContent = "日志分析由本机命令行运行时执行";
-        engineLabel.textContent = `${state.runtimes.filter(runtime => runtime.status === "online").length} 个运行时在线`;
-        return;
-      }
-      if (state.activeView === "history") {
-        pageEyebrow.textContent = "分析记录";
-        pageTitle.textContent = "历史记录";
-        pageRepoPath.textContent = state.path || "暂无仓库记录";
-        engineLabel.textContent = `${state.history.length} 条历史记录`;
-        return;
-      }
-      pageEyebrow.textContent = "仓库分析";
-      const name = repositoryName(state.path);
-      pageTitle.textContent = name === "未选择仓库" ? "分析概览" : name;
-      pageRepoPath.textContent = state.path || "选择一个本地仓库开始分析";
-      const runtime = selectedRuntime();
-      engineLabel.textContent = runtime ? `${runtime.name} 已就绪` : "等待可用运行时";
     }
 
     function selectedRuntime() {
@@ -1330,7 +1379,6 @@ def _html() -> str:
 
     function renderRuntimes() {
       const online = state.runtimes.filter(runtime => runtime.status === "online");
-      runtimeCount.textContent = online.length;
       document.querySelector("#runtimeSummary").textContent = `${online.length} 个在线 · ${state.runtimes.length} 个已检测`;
       runtimeSelect.innerHTML = state.runtimes.length
         ? state.runtimes.map(runtime => `<option value="${esc(runtime.id)}" ${runtime.status !== "online" ? "disabled" : ""}>${esc(runtime.name)} · ${runtime.status === "online" ? "在线" : "离线"}</option>`).join("")
@@ -1355,28 +1403,31 @@ def _html() -> str:
         });
       });
       updateRuntimeIndicator();
-      renderPageHeader();
     }
 
     function renderEmpty() {
       state.report = null;
       state.patch = "";
       state.selectedIssueId = "";
-      issueCountLabel.textContent = "等待分析";
+      state.detailMode = "source";
       document.querySelector("#metrics").innerHTML = summaryMarkup(null);
       document.querySelector("#issues").innerHTML = '<div class="empty">暂无分析结果</div>';
       document.querySelector("#issueDetail").innerHTML = '<div class="muted">选择仓库并开始分析。</div>';
-      document.querySelector("#detailPre").textContent = "等待分析结果";
+      fullPatchButton.disabled = true;
+      setDetailMode("source");
+      renderDiagnostics();
     }
 
     function renderReport(report) {
       state.report = report;
+      state.patch = "";
       state.selectedIssueId = (report.issues && report.issues[0] && report.issues[0].id) || "";
-      issueCountLabel.textContent = `${(report.issues || []).length} 项问题`;
+      fullPatchButton.disabled = true;
       renderMetrics(report.summary);
       renderIssues(report.issues || []);
       renderIssueDetail();
-      renderDetailContent();
+      setDetailMode("source");
+      renderDiagnostics();
     }
 
     function renderMetrics(summary) {
@@ -1427,6 +1478,7 @@ def _html() -> str:
           state.selectedIssueId = button.dataset.issueId;
           renderIssues(state.report.issues || []);
           renderIssueDetail();
+          renderDetailContent();
         });
       });
     }
@@ -1441,7 +1493,7 @@ def _html() -> str:
       detail.innerHTML = `
         <div>
           <h3>${esc(issue.title)}</h3>
-          <div class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(issue.source)}</div>
+          <div class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(sourceText(issue.source))}</div>
         </div>
         <div class="kv"><span>级别</span><strong class="${esc(issue.severity === "high" ? "danger" : issue.severity === "medium" ? "warning" : "success")}">${esc(severityText(issue.severity))}</strong></div>
         <div class="kv"><span>原因</span><div>${esc(issue.reason)}</div></div>
@@ -1451,13 +1503,7 @@ def _html() -> str:
 
     function renderDetailContent() {
       const target = document.querySelector("#detailPre");
-      if (state.detailMode === "patch") {
-        target.textContent = state.patch || "暂无补丁产物";
-      } else if (state.detailMode === "logs") {
-        target.textContent = logsText();
-      } else {
-        target.textContent = aiText();
-      }
+      target.textContent = state.detailMode === "patch" ? issuePatchText() : relatedCodeText();
     }
 
     function selectedIssue() {
@@ -1465,16 +1511,58 @@ def _html() -> str:
       return issues.find(issue => issue.id === state.selectedIssueId) || issues[0] || null;
     }
 
-    function logsText() {
+    function selectedIssueLog() {
+      const issue = selectedIssue();
       const logs = (state.report && state.report.logs) || [];
-      if (!logs.length) return "暂无日志调用";
-      return logs.map(log => `${log.file_path}:${log.line}  ${log.level}  ${log.callee}\\n${log.message || "<empty>"}`).join("\\n\\n");
+      if (!issue) return null;
+      return logs.find(log => log.id === issue.log_call_id) || null;
     }
 
-    function aiText() {
+    function relatedCodeText() {
+      const issue = selectedIssue();
+      if (!issue) return "选择一个问题查看相关代码。";
+      const log = selectedIssueLog();
+      const context = issue.context || (log && log.context) || "";
+      if (!context) return issue.file_path + ":" + issue.line + "\\n\\n当前报告没有保存源码上下文，请重新运行分析。";
+      const marked = context.split("\\n").map(line =>
+        line.startsWith(String(issue.line) + ":") ? "> " + line : "  " + line
+      ).join("\\n");
+      return issue.file_path + ":" + issue.line + "\\n\\n" + marked;
+    }
+
+    function issuePatchText() {
+      const issue = selectedIssue();
+      if (!issue) return "选择一个问题查看修改预览。";
+      const log = selectedIssueLog();
+      const sourceLine = issue.source_line || (log && log.source_line) || "";
+      if (issue.patch_action === "delete" && sourceLine) {
+        return "文件  " + issue.file_path + "\\n位置  第 " + issue.line + " 行\\n操作  删除当前日志\\n\\n- " + sourceLine;
+      }
+      return "当前问题没有可安全自动生成的修改。\\n\\n处理建议\\n" + issue.suggestion;
+    }
+
+    function renderDiagnostics() {
       const traces = (state.report && state.report.ai_traces) || [];
-      if (!traces.length) return "人工智能未开启，当前为规则分析结果。";
-      return traces.map(trace => `运行时  ${trace.runtime_id || "未知"}\\n版本    ${trace.runtime_version || "未知"}\\n耗时    ${trace.duration_ms || 0} ms\\n状态    ${trace.status}\\n\\n${trace.error || trace.raw_response || "无返回"}`).join("\\n\\n");
+      const summary = document.querySelector("#diagnosticsSummary");
+      if (!traces.length) state.diagnosticsOpen = false;
+      diagnosticsToggle.disabled = !traces.length;
+      diagnosticsToggle.querySelector("span").textContent = traces.length
+        ? (state.diagnosticsOpen ? "收起诊断" : "查看诊断")
+        : "暂无诊断";
+      summary.textContent = traces.length
+        ? traces.length + " 条运行记录，仅用于排查模型分析异常"
+        : "当前结果未包含模型运行记录";
+      diagnosticsPre.classList.toggle("hidden", !state.diagnosticsOpen || !traces.length);
+      diagnosticsPre.textContent = traces.map(trace => [
+        "运行时  " + (trace.runtime_id || "未知"),
+        "版本    " + (trace.runtime_version || "未知"),
+        "耗时    " + (trace.duration_ms || 0) + " ms",
+        "状态    " + trace.status,
+        "",
+        "请求\\n" + (trace.prompt || "无请求内容"),
+        "",
+        "返回\\n" + (trace.error || trace.raw_response || "无返回内容")
+      ].join("\\n")).join("\\n\\n----------------\\n\\n");
     }
 
     function severityText(value) {
@@ -1482,6 +1570,12 @@ def _html() -> str:
       if (value === "medium") return "中";
       if (value === "low") return "低";
       return value;
+    }
+
+    function sourceText(value) {
+      if (value === "rule") return "规则分析";
+      if (String(value).startsWith("runtime:")) return `${String(value).slice(8)} 运行时`;
+      return value || "未知来源";
     }
 
     function ruleText(value) {
@@ -1498,7 +1592,6 @@ def _html() -> str:
 
     function renderHistory(runs) {
       const target = document.querySelector("#historyList");
-      historyCount.textContent = runs.length;
       if (!runs.length) {
         target.innerHTML = '<div class="empty">暂无历史记录</div>';
         return;
@@ -1513,7 +1606,7 @@ def _html() -> str:
             </div>
             <div class="history-score"><strong>${esc(run.score)}</strong><span> / 100</span></div>
             <div class="history-stats">${esc(run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>${esc(run.runtime_id || "规则分析")} · 高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
-            <button class="secondary" type="button" data-run-id="${esc(run.run_id)}">查看</button>
+            <button class="secondary" type="button" data-run-id="${esc(run.run_id)}"><span>查看</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
           </div>
         `;
       }).join("");

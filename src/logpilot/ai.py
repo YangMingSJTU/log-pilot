@@ -156,6 +156,8 @@ def _issues_from_response(
                 source=f"runtime:{runtime_id}",
                 log_call_id=log.id,
                 patch_action=None,
+                context=log.context,
+                source_line=log.source_line,
             )
         )
     error = f"忽略了 {ignored} 项无法匹配的运行时结果。" if ignored else ""

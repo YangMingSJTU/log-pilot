@@ -136,6 +136,7 @@ def _missing_exception_logs(repo_root: Path) -> list[Issue]:
         if {".git", ".logpilot", ".venv", "venv", "__pycache__"}.intersection(parts):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
         try:
             tree = ast.parse(text)
         except SyntaxError:
@@ -159,6 +160,8 @@ def _missing_exception_logs(repo_root: Path) -> list[Issue]:
                     source="rule",
                     log_call_id=None,
                     patch_action=None,
+                    context=_source_context(lines, node.lineno),
+                    source_line=lines[node.lineno - 1].strip() if node.lineno <= len(lines) else "",
                 )
             )
     issues.extend(_missing_exception_logs_text(repo_root))
@@ -173,6 +176,7 @@ def _missing_exception_logs_text(repo_root: Path) -> list[Issue]:
         if {".git", ".logpilot", ".venv", "venv", "node_modules", "dist", "build"}.intersection(parts):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
         for match in pattern.finditer(text):
             body = match.group("body")
             if re.search(r"\b(logger|log|console)\s*\.\s*(error|exception|warn|warning|log)\s*\(", body):
@@ -192,6 +196,8 @@ def _missing_exception_logs_text(repo_root: Path) -> list[Issue]:
                     source="rule",
                     log_call_id=None,
                     patch_action=None,
+                    context=_source_context(lines, line),
+                    source_line=lines[line - 1].strip() if line <= len(lines) else "",
                 )
             )
     return issues
@@ -234,7 +240,15 @@ def _issue(
         source="rule",
         log_call_id=log.id,
         patch_action=patch_action,
+        context=log.context,
+        source_line=log.source_line,
     )
+
+
+def _source_context(lines: list[str], line_number: int, radius: int = 2) -> str:
+    start = max(1, line_number - radius)
+    end = min(len(lines), line_number + radius)
+    return "\n".join(f"{number}: {lines[number - 1]}" for number in range(start, end + 1))
 
 
 def _looks_low_value(message: str) -> bool:

@@ -39,6 +39,8 @@ class Issue:
     source: str
     log_call_id: str | None = None
     patch_action: str | None = None
+    context: str = ""
+    source_line: str = ""
 
 
 @dataclass(slots=True)
