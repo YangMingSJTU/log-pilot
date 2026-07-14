@@ -10,6 +10,7 @@ Use the local Python runtime to install and validate the project:
 
 - `python -m pip install -e .` installs the editable CLI package.
 - `python -m unittest discover -s tests` runs the test suite.
+- `python -m logpilot runtimes` checks local Codex and Claude runtimes.
 - `python -m logpilot scan .` scans the current repository.
 - `python -m logpilot ui --path .` starts the local debug console.
 
@@ -17,7 +18,7 @@ Run `git diff --check` before submitting changes. Runtime dependencies are track
 
 ## Coding Style & Naming Conventions
 
-Use 4-space indentation for Python and keep modules focused around one responsibility: scanning, parsing, rules, AI, reporting, patching, CLI, or Web UI. Prefer dataclasses and explicit type hints for shared data structures. Keep Markdown headings sentence-case and use fenced code blocks with language labels.
+Use 4-space indentation for Python and keep modules focused around one responsibility: scanning, parsing, rules, runtime execution, AI, reporting, patching, CLI, or Web UI. Prefer dataclasses and explicit type hints for shared data structures. Keep Markdown headings sentence-case and use fenced code blocks with language labels.
 
 ## Testing Guidelines
 

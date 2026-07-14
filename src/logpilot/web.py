@@ -8,15 +8,29 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .history import list_history_runs, load_history_run
 from .pipeline import run_scan
+from .runtime import RuntimeExecutor, RuntimeRegistry
 
 
-def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
+def build_server(
+    repo_root: Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    runtime_registry: RuntimeRegistry | None = None,
+    runtime_executor: RuntimeExecutor | None = None,
+) -> ThreadingHTTPServer:
     initial_root = repo_root.resolve()
-    state = {"repo_root": initial_root, "artifacts": initial_root / ".logpilot"}
+    state: dict[str, Any] = {
+        "repo_root": initial_root,
+        "artifacts": initial_root / ".logpilot",
+        "runtime_id": "auto",
+    }
+    runtimes = runtime_registry or RuntimeRegistry()
+    executor = runtime_executor or RuntimeExecutor()
     browse_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -34,6 +48,8 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                 self._send_json({"repository": str(state["repo_root"]), "runs": list_history_runs(state["artifacts"])})
             elif parsed.path == "/api/history/run":
                 self._send_history_run(parsed.query)
+            elif parsed.path == "/api/runtimes":
+                self._send_json(_runtime_payload(runtimes, state, refresh=False))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -43,6 +59,8 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                 self._handle_scan()
             elif parsed.path == "/api/browse":
                 self._handle_browse()
+            elif parsed.path == "/api/runtimes/refresh":
+                self._send_json(_runtime_payload(runtimes, state, refresh=True))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -57,9 +75,17 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                     self._send_json({"error": f"仓库路径不存在：{target}"}, HTTPStatus.BAD_REQUEST)
                     return
 
-                report = run_scan(target)
+                requested_runtime = str(payload.get("runtime", "auto")).strip() or "auto"
+                selected_runtime = runtimes.resolve(requested_runtime)
+                report = run_scan(
+                    target,
+                    runtime_id=selected_runtime.id,
+                    runtime_registry=runtimes,
+                    runtime_executor=executor,
+                )
                 state["repo_root"] = target.resolve()
                 state["artifacts"] = target.resolve() / ".logpilot"
+                state["runtime_id"] = selected_runtime.id
                 history = list_history_runs(state["artifacts"])
                 self._send_json(
                     {
@@ -67,6 +93,7 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                         "report": report.to_dict(),
                         "history": history,
                         "run": history[0] if history else None,
+                        "runtime": selected_runtime.to_dict(),
                     }
                 )
             except Exception as exc:  # Keep the local UI useful during early scanner work.
@@ -196,12 +223,25 @@ def _resolve_repo_path(raw_path: str) -> Path:
     return Path(raw_path).expanduser().resolve()
 
 
-def _state_payload(state: dict[str, Path]) -> dict[str, object]:
+def _state_payload(state: dict[str, Any]) -> dict[str, object]:
     artifacts = state["artifacts"]
     return {
         "repository": str(state["repo_root"]),
         "has_report": (artifacts / "report.json").exists(),
         "history": list_history_runs(artifacts),
+        "runtime_id": state.get("runtime_id", "auto"),
+    }
+
+
+def _runtime_payload(
+    registry: RuntimeRegistry,
+    state: dict[str, Any],
+    refresh: bool,
+) -> dict[str, object]:
+    available = registry.refresh() if refresh else registry.list()
+    return {
+        "runtimes": [runtime.to_dict() for runtime in available],
+        "selected": state.get("runtime_id", "auto"),
     }
 
 
@@ -240,7 +280,7 @@ def _html() -> str:
       color: var(--ink);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     button {
       height: 40px;
       padding: 0 14px;
@@ -255,7 +295,7 @@ def _html() -> str:
     }
     button:hover { background: #7c3aed; }
     button:disabled { opacity: .58; cursor: wait; }
-    button:focus-visible, input:focus-visible {
+    button:focus-visible, input:focus-visible, select:focus-visible {
       outline: 2px solid var(--purple);
       outline-offset: 2px;
     }
@@ -378,7 +418,7 @@ def _html() -> str:
       grid-row: 1;
       min-height: 64px;
       display: grid;
-      grid-template-columns: minmax(160px, .55fr) minmax(360px, 1.45fr) auto;
+      grid-template-columns: minmax(130px, .45fr) minmax(300px, 1.3fr) 180px auto;
       gap: 12px;
       align-items: center;
       padding: 11px 22px;
@@ -421,6 +461,32 @@ def _html() -> str:
       text-overflow: ellipsis;
     }
     input:focus { border-color: var(--purple); box-shadow: none; }
+    .runtime-control {
+      min-width: 0;
+      height: 40px;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      padding: 0 8px 0 11px;
+      border: 1px solid #414146;
+      background: #111113;
+    }
+    .runtime-control .state-dot.offline {
+      background: var(--red);
+      box-shadow: 0 0 0 3px rgba(251, 113, 133, .12);
+    }
+    select {
+      width: 100%;
+      height: 36px;
+      min-width: 0;
+      border: 0;
+      background: #111113;
+      color: var(--ink);
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+    }
     main {
       grid-column: 2;
       grid-row: 2;
@@ -681,6 +747,89 @@ def _html() -> str:
     .history-score span { color: var(--muted); font-size: 10px; }
     .history-stats { color: var(--muted); font-size: 11px; line-height: 1.7; }
     .history-row button { justify-self: end; }
+    .runtime-overview {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 22px;
+      align-items: center;
+      min-height: 92px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      background: #0d0d0e;
+    }
+    .runtime-machine { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .machine-icon {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      background: #151517;
+      color: var(--ink);
+      font-size: 20px;
+    }
+    .runtime-machine h2 { margin: 0 0 5px; font-size: 16px; }
+    .runtime-machine p { margin: 0; color: var(--muted); font-size: 11px; }
+    .runtime-table { border: 1px solid var(--line); background: #0d0d0e; }
+    .runtime-header, .runtime-row {
+      display: grid;
+      grid-template-columns: minmax(180px, .8fr) 120px minmax(180px, .8fr) minmax(260px, 1.5fr);
+      gap: 18px;
+      align-items: center;
+      padding: 0 20px;
+    }
+    .runtime-header {
+      min-height: 38px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    button.runtime-row {
+      width: 100%;
+      height: auto;
+      min-height: 68px;
+      border: 0;
+      border-bottom: 1px solid var(--line-soft);
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+    }
+    button.runtime-row:hover { background: #171719; }
+    button.runtime-row.selected { box-shadow: inset 2px 0 0 var(--purple); background: #17111f; }
+    button.runtime-row:disabled { opacity: 1; cursor: default; }
+    .runtime-row:last-child { border-bottom: 0; }
+    .runtime-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .runtime-logo {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #45454a;
+      background: #18181b;
+      font-size: 11px;
+      font-weight: 750;
+    }
+    .runtime-name strong { font-size: 13px; }
+    .runtime-badge {
+      padding: 2px 5px;
+      border: 1px solid #45454a;
+      color: var(--muted);
+      font-size: 9px;
+    }
+    .health { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .health.offline { color: var(--red); }
+    .health.online { color: var(--green); }
+    .runtime-value {
+      overflow: hidden;
+      color: var(--muted);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .toast-region {
       position: fixed;
       top: 82px;
@@ -733,6 +882,7 @@ def _html() -> str:
       .topbar, main { grid-column: 2; }
       .topbar { grid-template-columns: minmax(0, 1fr) auto; }
       .breadcrumb { display: none; }
+      .runtime-control { display: none; }
       .page-header, .view-panel { padding-left: 28px; padding-right: 28px; }
       .analysis-workspace { grid-template-columns: minmax(300px, .85fr) minmax(410px, 1.15fr); }
     }
@@ -766,6 +916,9 @@ def _html() -> str:
       .history-row { grid-template-columns: 1fr auto; }
       .history-score, .history-stats { display: none; }
       .toast-region { top: auto; right: 16px; bottom: 16px; }
+      .runtime-header { display: none; }
+      .runtime-row { grid-template-columns: minmax(150px, 1fr) auto; }
+      .runtime-row .runtime-value { display: none; }
     }
     @media (max-width: 560px) {
       .sidebar { grid-template-columns: 1fr; grid-template-rows: 56px auto; }
@@ -800,6 +953,7 @@ def _html() -> str:
       <nav class="side-nav" aria-label="主要导航">
         <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true">◎</span><span>分析概览</span></button>
         <button class="nav-item" id="historyTab" type="button"><span class="nav-icon" aria-hidden="true">◷</span><span>历史记录</span><span class="nav-count" id="historyCount">0</span></button>
+        <button class="nav-item" id="runtimeTab" type="button"><span class="nav-icon" aria-hidden="true">▣</span><span>运行时</span><span class="nav-count" id="runtimeCount">0</span></button>
       </nav>
       <div class="sidebar-footer"><span class="local-dot"></span><span>本地模式</span></div>
     </aside>
@@ -809,17 +963,21 @@ def _html() -> str:
         <input id="repoPath" type="text" spellcheck="false" aria-label="仓库路径" placeholder="D:\\GitHub\\log-pilot">
         <button class="secondary" id="browseButton" type="button">选择仓库</button>
       </div>
+      <label class="runtime-control" title="选择执行日志分析的本机运行时">
+        <span class="state-dot offline" id="runtimeDot"></span>
+        <select id="runtimeSelect" aria-label="分析运行时"><option value="">检测运行时...</option></select>
+      </label>
       <button id="scanButton" type="button">开始分析</button>
     </header>
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
     <main>
       <section class="page-header">
         <div>
-          <div class="eyebrow">仓库分析</div>
+          <div class="eyebrow" id="pageEyebrow">仓库分析</div>
           <h1 id="pageTitle">分析概览</h1>
           <p class="page-path" id="pageRepoPath">选择一个本地仓库开始分析</p>
         </div>
-        <div class="engine-state"><span class="state-dot"></span><span>规则引擎已就绪</span></div>
+        <div class="engine-state"><span class="state-dot"></span><span id="engineLabel">规则引擎已就绪</span></div>
       </section>
       <div class="view-panel" id="currentPanel">
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
@@ -853,6 +1011,19 @@ def _html() -> str:
           <div class="history-list" id="historyList"></div>
         </div>
       </section>
+      <section id="runtimePanel" class="view-panel hidden">
+        <div class="runtime-overview">
+          <div class="runtime-machine">
+            <span class="machine-icon" aria-hidden="true">▣</span>
+            <div><h2>本机运行环境</h2><p id="runtimeSummary">正在检测可用的命令行运行时</p></div>
+          </div>
+          <button class="secondary" id="refreshRuntimesButton" type="button">刷新状态</button>
+        </div>
+        <div class="runtime-table">
+          <div class="runtime-header"><span>运行时</span><span>健康状态</span><span>版本</span><span>可执行文件</span></div>
+          <div id="runtimeList"></div>
+        </div>
+      </section>
     </main>
   </div>
   <script>
@@ -867,7 +1038,10 @@ def _html() -> str:
       report: null,
       patch: "",
       selectedIssueId: "",
-      detailMode: "patch"
+      detailMode: "patch",
+      runtimes: [],
+      selectedRuntime: "",
+      activeView: "current"
     };
     const repoPath = document.querySelector("#repoPath");
     const browseButton = document.querySelector("#browseButton");
@@ -876,13 +1050,21 @@ def _html() -> str:
     const sidebarRepoName = document.querySelector("#sidebarRepoName");
     const headerRepoName = document.querySelector("#headerRepoName");
     const pageTitle = document.querySelector("#pageTitle");
+    const pageEyebrow = document.querySelector("#pageEyebrow");
     const pageRepoPath = document.querySelector("#pageRepoPath");
+    const engineLabel = document.querySelector("#engineLabel");
     const historyCount = document.querySelector("#historyCount");
     const issueCountLabel = document.querySelector("#issueCountLabel");
     const currentTab = document.querySelector("#currentTab");
     const historyTab = document.querySelector("#historyTab");
+    const runtimeTab = document.querySelector("#runtimeTab");
     const currentPanel = document.querySelector("#currentPanel");
     const historyPanel = document.querySelector("#historyPanel");
+    const runtimePanel = document.querySelector("#runtimePanel");
+    const runtimeSelect = document.querySelector("#runtimeSelect");
+    const runtimeDot = document.querySelector("#runtimeDot");
+    const runtimeCount = document.querySelector("#runtimeCount");
+    const refreshRuntimesButton = document.querySelector("#refreshRuntimesButton");
     const patchTab = document.querySelector("#patchTab");
     const logsTab = document.querySelector("#logsTab");
     const aiTab = document.querySelector("#aiTab");
@@ -894,14 +1076,22 @@ def _html() -> str:
     });
     currentTab.addEventListener("click", () => showTab("current"));
     historyTab.addEventListener("click", () => showTab("history"));
+    runtimeTab.addEventListener("click", () => showTab("runtime"));
+    refreshRuntimesButton.addEventListener("click", () => loadRuntimes(true));
+    runtimeSelect.addEventListener("change", () => {
+      state.selectedRuntime = runtimeSelect.value;
+      window.localStorage.setItem("logpilot.runtime", state.selectedRuntime);
+      renderRuntimes();
+    });
     patchTab.addEventListener("click", () => setDetailMode("patch"));
     logsTab.addEventListener("click", () => setDetailMode("logs"));
     aiTab.addEventListener("click", () => setDetailMode("ai"));
 
     async function init() {
       try {
-        const response = await fetch("/api/state");
-        const payload = await response.json();
+        const [stateResponse] = await Promise.all([fetch("/api/state"), loadRuntimes(false)]);
+        const payload = await stateResponse.json();
+        if (!stateResponse.ok || payload.error) throw new Error(payload.error || "状态读取失败");
         state.path = payload.repository || "";
         state.history = payload.history || [];
         repoPath.value = state.path;
@@ -912,6 +1102,33 @@ def _html() -> str:
       } catch (error) {
         showToast(`初始化失败：${error.message}`, "error");
         renderEmpty();
+      }
+    }
+
+    async function loadRuntimes(refresh) {
+      refreshRuntimesButton.disabled = true;
+      try {
+        const response = await fetch(refresh ? "/api/runtimes/refresh" : "/api/runtimes", {
+          method: refresh ? "POST" : "GET"
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "运行时检测失败");
+        state.runtimes = payload.runtimes || [];
+        const online = state.runtimes.filter(runtime => runtime.status === "online");
+        const remembered = window.localStorage.getItem("logpilot.runtime");
+        const preferred = [remembered, payload.selected, "codex", "claude"].find(id =>
+          online.some(runtime => runtime.id === id)
+        );
+        state.selectedRuntime = preferred || "";
+        renderRuntimes();
+        if (refresh) showToast(`运行时状态已刷新，${online.length} 个在线`, "success");
+      } catch (error) {
+        state.runtimes = [];
+        state.selectedRuntime = "";
+        renderRuntimes();
+        if (refresh) showToast(`刷新失败：${error.message}`, "error");
+      } finally {
+        refreshRuntimesButton.disabled = false;
       }
     }
 
@@ -949,13 +1166,18 @@ def _html() -> str:
         showToast("请先输入或选择本地仓库路径", "warning");
         return;
       }
+      const runtime = selectedRuntime();
+      if (!runtime) {
+        showToast("没有可用运行时，请先在运行时页面检查 Codex 或 Claude", "warning");
+        return;
+      }
       setScanning(true);
-      showToast("正在分析仓库，请稍候...", "info", 0);
+      showToast(`正在通过 ${runtime.name} 分析仓库...`, "info", 0);
       try {
         const response = await fetch("/api/scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: target })
+          body: JSON.stringify({ path: target, runtime: runtime.id })
         });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "扫描失败");
@@ -967,7 +1189,7 @@ def _html() -> str:
         renderHistory(state.history);
         await loadPatch();
         showTab("current");
-        showToast("分析完成，结果已更新", "success");
+        showToast(`${runtime.name} 分析完成，结果已更新`, "success");
       } catch (error) {
         showToast(`分析失败：${error.message}`, "error");
       } finally {
@@ -1029,7 +1251,8 @@ def _html() -> str:
 
     function setScanning(value) {
       state.scanning = value;
-      scanButton.disabled = value;
+      scanButton.disabled = value || !selectedRuntime();
+      runtimeSelect.disabled = value;
       scanButton.textContent = value ? "分析中..." : "开始分析";
     }
 
@@ -1048,11 +1271,14 @@ def _html() -> str:
     }
 
     function showTab(name) {
-      const showHistory = name === "history";
-      currentPanel.classList.toggle("hidden", showHistory);
-      historyPanel.classList.toggle("hidden", !showHistory);
-      currentTab.classList.toggle("active", !showHistory);
-      historyTab.classList.toggle("active", showHistory);
+      state.activeView = name;
+      currentPanel.classList.toggle("hidden", name !== "current");
+      historyPanel.classList.toggle("hidden", name !== "history");
+      runtimePanel.classList.toggle("hidden", name !== "runtime");
+      currentTab.classList.toggle("active", name === "current");
+      historyTab.classList.toggle("active", name === "history");
+      runtimeTab.classList.toggle("active", name === "runtime");
+      renderPageHeader();
     }
 
     function repositoryName(path) {
@@ -1064,8 +1290,72 @@ def _html() -> str:
       const name = repositoryName(path);
       sidebarRepoName.textContent = name;
       headerRepoName.textContent = name;
+      state.path = path || state.path;
+      renderPageHeader();
+    }
+
+    function renderPageHeader() {
+      if (state.activeView === "runtime") {
+        pageEyebrow.textContent = "本机环境";
+        pageTitle.textContent = "运行时";
+        pageRepoPath.textContent = "日志分析由本机命令行运行时执行";
+        engineLabel.textContent = `${state.runtimes.filter(runtime => runtime.status === "online").length} 个运行时在线`;
+        return;
+      }
+      if (state.activeView === "history") {
+        pageEyebrow.textContent = "分析记录";
+        pageTitle.textContent = "历史记录";
+        pageRepoPath.textContent = state.path || "暂无仓库记录";
+        engineLabel.textContent = `${state.history.length} 条历史记录`;
+        return;
+      }
+      pageEyebrow.textContent = "仓库分析";
+      const name = repositoryName(state.path);
       pageTitle.textContent = name === "未选择仓库" ? "分析概览" : name;
-      pageRepoPath.textContent = path || "选择一个本地仓库开始分析";
+      pageRepoPath.textContent = state.path || "选择一个本地仓库开始分析";
+      const runtime = selectedRuntime();
+      engineLabel.textContent = runtime ? `${runtime.name} 已就绪` : "等待可用运行时";
+    }
+
+    function selectedRuntime() {
+      return state.runtimes.find(runtime => runtime.id === state.selectedRuntime && runtime.status === "online") || null;
+    }
+
+    function updateRuntimeIndicator() {
+      const runtime = selectedRuntime();
+      runtimeDot.classList.toggle("offline", !runtime);
+      scanButton.disabled = state.scanning || !runtime;
+      scanButton.title = runtime ? `使用 ${runtime.name} 执行分析` : "没有可用运行时";
+    }
+
+    function renderRuntimes() {
+      const online = state.runtimes.filter(runtime => runtime.status === "online");
+      runtimeCount.textContent = online.length;
+      document.querySelector("#runtimeSummary").textContent = `${online.length} 个在线 · ${state.runtimes.length} 个已检测`;
+      runtimeSelect.innerHTML = state.runtimes.length
+        ? state.runtimes.map(runtime => `<option value="${esc(runtime.id)}" ${runtime.status !== "online" ? "disabled" : ""}>${esc(runtime.name)} · ${runtime.status === "online" ? "在线" : "离线"}</option>`).join("")
+        : '<option value="">未发现运行时</option>';
+      runtimeSelect.value = state.selectedRuntime;
+      const list = document.querySelector("#runtimeList");
+      list.innerHTML = state.runtimes.length ? state.runtimes.map(runtime => `
+        <button class="runtime-row ${runtime.id === state.selectedRuntime ? "selected" : ""}" type="button" data-runtime-id="${esc(runtime.id)}" ${runtime.status !== "online" ? "disabled" : ""}>
+          <div class="runtime-name"><span class="runtime-logo">${esc(runtime.name.slice(0, 1))}</span><strong>${esc(runtime.name)}</strong><span class="runtime-badge">内置</span></div>
+          <div class="health ${esc(runtime.status)}"><span class="state-dot ${runtime.status === "online" ? "" : "offline"}"></span>${runtime.status === "online" ? "在线" : "离线"}</div>
+          <div class="runtime-value" title="${esc(runtime.version || runtime.error)}">${esc(runtime.version || "未检测到")}</div>
+          <div class="runtime-value" title="${esc(runtime.executable_path || runtime.error)}">${esc(runtime.executable_path || runtime.error)}</div>
+        </button>
+      `).join("") : '<div class="empty">未检测到 Codex 或 Claude 命令行运行时</div>';
+      list.querySelectorAll("button[data-runtime-id]").forEach(button => {
+        button.addEventListener("click", () => {
+          state.selectedRuntime = button.dataset.runtimeId;
+          runtimeSelect.value = state.selectedRuntime;
+          window.localStorage.setItem("logpilot.runtime", state.selectedRuntime);
+          renderRuntimes();
+          showToast(`已选择 ${selectedRuntime().name} 运行时`, "success");
+        });
+      });
+      updateRuntimeIndicator();
+      renderPageHeader();
     }
 
     function renderEmpty() {
@@ -1184,7 +1474,7 @@ def _html() -> str:
     function aiText() {
       const traces = (state.report && state.report.ai_traces) || [];
       if (!traces.length) return "人工智能未开启，当前为规则分析结果。";
-      return traces.map(trace => `${trace.status}  ${trace.log_call_id}\\n${trace.error || trace.raw_response || "无返回"}`).join("\\n\\n");
+      return traces.map(trace => `运行时  ${trace.runtime_id || "未知"}\\n版本    ${trace.runtime_version || "未知"}\\n耗时    ${trace.duration_ms || 0} ms\\n状态    ${trace.status}\\n\\n${trace.error || trace.raw_response || "无返回"}`).join("\\n\\n");
     }
 
     function severityText(value) {
@@ -1201,7 +1491,8 @@ def _html() -> str:
         low_value_log: "低价值信息",
         sensitive_log: "敏感数据",
         duplicate_log: "重复信息",
-        missing_exception_log: "异常记录"
+        missing_exception_log: "异常记录",
+        ai_log_quality: "运行时分析"
       })[value] || value;
     }
 
@@ -1221,7 +1512,7 @@ def _html() -> str:
               <div class="meta">${esc(formatTime(run.created_at))} · ${esc(run.repository)}</div>
             </div>
             <div class="history-score"><strong>${esc(run.score)}</strong><span> / 100</span></div>
-            <div class="history-stats">${esc(run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
+            <div class="history-stats">${esc(run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>${esc(run.runtime_id || "规则分析")} · 高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
             <button class="secondary" type="button" data-run-id="${esc(run.run_id)}">查看</button>
           </div>
         `;

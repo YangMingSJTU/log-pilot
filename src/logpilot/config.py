@@ -33,9 +33,9 @@ class RulesConfig:
 @dataclass(slots=True)
 class AiConfig:
     enabled: bool = False
-    provider: str = "openai_compatible"
-    model: str = "gpt-4.1-mini"
-    base_url: str = "https://api.openai.com/v1"
+    runtime: str = "auto"
+    model: str = ""
+    timeout_seconds: int = 180
 
 
 @dataclass(slots=True)
@@ -76,9 +76,9 @@ def _config_from_dict(data: dict[str, Any]) -> LogPilotConfig:
 
     if isinstance(ai, dict):
         config.ai.enabled = _bool_value(ai.get("enabled"), config.ai.enabled)
-        config.ai.provider = str(ai.get("provider", config.ai.provider))
+        config.ai.runtime = str(ai.get("runtime", config.ai.runtime))
         config.ai.model = str(ai.get("model", config.ai.model))
-        config.ai.base_url = str(ai.get("base_url", config.ai.base_url))
+        config.ai.timeout_seconds = _int_value(ai.get("timeout_seconds"), config.ai.timeout_seconds)
 
     if isinstance(scan, dict):
         config.scan.exclude = _string_list(scan.get("exclude"), config.scan.exclude)
@@ -166,3 +166,11 @@ def _bool_value(value: Any, default: bool) -> bool:
     if isinstance(value, str):
         return value.lower() in {"1", "true", "yes", "on"}
     return default
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default

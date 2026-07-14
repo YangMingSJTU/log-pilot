@@ -12,9 +12,12 @@ logpilot ui
 Open the printed local URL, use the repository picker or enter a path such as `D:\GitHub\log-pilot`, and click the analyze button. You can still run the CLI directly:
 
 ```bash
-logpilot scan .
+logpilot runtimes
+logpilot scan . --runtime codex
 logpilot report
 ```
+
+The workbench detects local Codex and Claude CLI runtimes, shows their health and versions, and sends each log-analysis batch through the selected runtime. Codex runs in read-only ephemeral mode; Claude runs without tools in plan mode. Override executable discovery with `LOGPILOT_CODEX_PATH` or `LOGPILOT_CLAUDE_PATH`.
 
 Both the UI and scan command write artifacts to the selected repository's `.logpilot/` directory:
 
@@ -28,8 +31,9 @@ Both the UI and scan command write artifacts to the selected repository's `.logp
 ```bash
 python -m pip install -e .
 python -m unittest discover -s tests
-python -m logpilot scan .
+python -m logpilot runtimes
+python -m logpilot scan . --runtime codex
 python -m logpilot ui --path .
 ```
 
-The local Web UI exposes `POST /api/browse` for a native folder picker, `POST /api/scan` for path-based analysis, and history endpoints for loading earlier runs. The MVP intentionally uses Python standard library modules only so it can run on the current local Python 3.14 environment. Future integrations can add Typer, FastAPI, Pydantic, and Tree-sitter behind the existing CLI, Web, model, and parser boundaries.
+The local Web UI exposes `POST /api/browse` for a native folder picker, `POST /api/scan` for runtime-backed analysis, `/api/runtimes` for local runtime health, and history endpoints for loading earlier runs. The MVP intentionally uses Python standard library modules only so it can run on the current local Python 3.14 environment. Future integrations can add Typer, FastAPI, Pydantic, and Tree-sitter behind the existing CLI, Web, model, and parser boundaries.

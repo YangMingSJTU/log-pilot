@@ -1,130 +1,162 @@
 from __future__ import annotations
 
 import json
-import os
-import urllib.error
-import urllib.request
+from pathlib import Path
+from typing import Any
 
 from .config import AiConfig
 from .models import AiTrace, Issue, LogCall, Severity
+from .runtime import RuntimeExecutor, RuntimeRegistry
 
 
-class AiProvider:
-    def analyze(self, log: LogCall, config: AiConfig) -> AiTrace:
-        raise NotImplementedError
-
-
-class DisabledProvider(AiProvider):
-    def analyze(self, log: LogCall, config: AiConfig) -> AiTrace:
-        return AiTrace(log_call_id=log.id, status="skipped", prompt="")
-
-
-class OpenAICompatibleProvider(AiProvider):
-    def analyze(self, log: LogCall, config: AiConfig) -> AiTrace:
-        prompt = build_prompt(log)
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return AiTrace(log_call_id=log.id, status="error", prompt=prompt, error="OPENAI_API_KEY is not set.")
-
-        payload = {
-            "model": os.getenv("LOGPILOT_MODEL", config.model),
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You review code logs. Return compact JSON only.",
+ANALYSIS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "log_call_id": {"type": "string"},
+                    "has_issue": {"type": "boolean"},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "title": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "suggestion": {"type": "string"},
                 },
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0,
-        }
-        url = os.getenv("LOGPILOT_BASE_URL", config.base_url).rstrip("/") + "/chat/completions"
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
+                "required": [
+                    "log_call_id",
+                    "has_issue",
+                    "severity",
+                    "title",
+                    "reason",
+                    "suggestion",
+                ],
+                "additionalProperties": False,
             },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read().decode("utf-8")
-            return AiTrace(log_call_id=log.id, status="ok", prompt=prompt, raw_response=raw)
-        except (urllib.error.URLError, TimeoutError) as exc:
-            return AiTrace(log_call_id=log.id, status="error", prompt=prompt, error=str(exc))
+        }
+    },
+    "required": ["findings"],
+    "additionalProperties": False,
+}
 
 
-class MockProvider(AiProvider):
-    def analyze(self, log: LogCall, config: AiConfig) -> AiTrace:
-        prompt = build_prompt(log)
-        raw = json.dumps({"risk": "low", "suggestion": "mocked"}, ensure_ascii=False)
-        return AiTrace(log_call_id=log.id, status="ok", prompt=prompt, raw_response=raw)
-
-
-def analyze_with_ai(logs: list[LogCall], config: AiConfig, provider: AiProvider | None = None) -> tuple[list[Issue], list[AiTrace]]:
-    if not config.enabled:
+def analyze_with_ai(
+    logs: list[LogCall],
+    config: AiConfig,
+    repo_root: Path,
+    runtime_id: str | None = None,
+    registry: RuntimeRegistry | None = None,
+    executor: RuntimeExecutor | None = None,
+) -> tuple[list[Issue], list[AiTrace]]:
+    if runtime_id is None and not config.enabled:
+        return [], []
+    if not logs:
         return [], []
 
-    selected = provider or OpenAICompatibleProvider()
-    traces: list[AiTrace] = []
-    issues: list[Issue] = []
-    for log in logs:
-        trace = selected.analyze(log, config)
-        traces.append(trace)
-        issue = _issue_from_trace(log, trace)
-        if issue:
-            issues.append(issue)
-    return issues, traces
+    runtime_registry = registry or RuntimeRegistry()
+    runtime = runtime_registry.resolve(runtime_id or config.runtime)
+    prompt = build_prompt(logs)
+    execution = (executor or RuntimeExecutor()).execute(
+        runtime,
+        prompt,
+        repo_root,
+        ANALYSIS_SCHEMA,
+        model=config.model,
+        timeout_seconds=config.timeout_seconds,
+    )
+    trace = AiTrace(
+        log_call_id="runtime-batch",
+        status=execution.status,
+        prompt=prompt,
+        raw_response=execution.raw_response,
+        error=execution.error,
+        runtime_id=runtime.id,
+        runtime_version=runtime.version,
+        duration_ms=execution.duration_ms,
+    )
+    if execution.status != "ok":
+        raise RuntimeError(f"{runtime.name} 运行时分析失败：{execution.error}")
+
+    issues, parse_error = _issues_from_response(logs, execution.raw_response, runtime.id)
+    if parse_error:
+        trace.status = "parse_error"
+        trace.error = parse_error
+    return issues, [trace]
 
 
-def build_prompt(log: LogCall) -> str:
+def build_prompt(logs: list[LogCall]) -> str:
     payload = {
-        "task": "Analyze whether this log is useful, missing fields, duplicated, or risky.",
-        "expected_json": {
-            "has_issue": True,
-            "severity": "low|medium|high",
-            "title": "short title",
-            "reason": "why",
-            "suggestion": "what to change",
-        },
-        "log": {
-            "file_path": log.file_path,
-            "line": log.line,
-            "language": log.language,
-            "level": log.level,
-            "callee": log.callee,
-            "message": log.message,
-            "context": log.context,
-        },
+        "task": (
+            "逐项审查日志调用，判断其是否低价值、字段不足、重复、泄露敏感信息或缺少业务上下文。"
+            "只返回符合给定 JSON Schema 的对象，不要修改文件，不要执行任何命令。"
+        ),
+        "rules": [
+            "每个输入日志必须返回一项 finding，并原样保留 log_call_id。",
+            "没有问题时 has_issue=false，其他说明字段仍需给出简短内容。",
+            "severity 只能是 low、medium 或 high。",
+            "标题、原因和建议使用简洁中文。",
+        ],
+        "logs": [
+            {
+                "log_call_id": log.id,
+                "file_path": log.file_path,
+                "line": log.line,
+                "language": log.language,
+                "level": log.level,
+                "callee": log.callee,
+                "message": log.message,
+                "context": log.context[:1600],
+            }
+            for log in logs
+        ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _issue_from_trace(log: LogCall, trace: AiTrace) -> Issue | None:
-    if trace.status != "ok" or not trace.raw_response:
-        return None
+def _issues_from_response(
+    logs: list[LogCall],
+    raw_response: str,
+    runtime_id: str,
+) -> tuple[list[Issue], str]:
     try:
-        raw = json.loads(trace.raw_response)
-        content = raw
-        if isinstance(raw, dict) and "choices" in raw:
-            content_text = raw["choices"][0]["message"]["content"]
-            content = json.loads(content_text)
-        if not isinstance(content, dict) or not content.get("has_issue"):
-            return None
-        severity = Severity(str(content.get("severity", "low")).lower())
-        return Issue(
-            id=f"ai:{log.id}",
-            file_path=log.file_path,
-            line=log.line,
-            severity=severity,
-            kind="ai_log_quality",
-            title=str(content.get("title", "AI log quality finding")),
-            reason=str(content.get("reason", "AI provider reported a log quality concern.")),
-            suggestion=str(content.get("suggestion", "Review this log.")),
-            source="ai",
-            log_call_id=log.id,
-            patch_action=None,
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        return [], f"运行时结果不是有效 JSON：{exc}"
+    findings = payload.get("findings") if isinstance(payload, dict) else None
+    if not isinstance(findings, list):
+        return [], "运行时结果缺少 findings 数组。"
+
+    logs_by_id = {log.id: log for log in logs}
+    issues: list[Issue] = []
+    ignored = 0
+    for finding in findings:
+        if not isinstance(finding, dict):
+            ignored += 1
+            continue
+        log = logs_by_id.get(str(finding.get("log_call_id", "")))
+        if not log or not finding.get("has_issue"):
+            if not log:
+                ignored += 1
+            continue
+        try:
+            severity = Severity(str(finding.get("severity", "low")).lower())
+        except ValueError:
+            severity = Severity.LOW
+        issues.append(
+            Issue(
+                id=f"ai:{log.id}",
+                file_path=log.file_path,
+                line=log.line,
+                severity=severity,
+                kind="ai_log_quality",
+                title=str(finding.get("title") or "运行时日志质量建议"),
+                reason=str(finding.get("reason") or "运行时发现日志质量问题。"),
+                suggestion=str(finding.get("suggestion") or "请审查该日志。"),
+                source=f"runtime:{runtime_id}",
+                log_call_id=log.id,
+                patch_action=None,
+            )
         )
-    except Exception:
-        return None
+    error = f"忽略了 {ignored} 项无法匹配的运行时结果。" if ignored else ""
+    return issues, error

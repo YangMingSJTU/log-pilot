@@ -63,6 +63,7 @@ def _new_run_id() -> str:
 
 def _metadata_for(report: ScanReport, run_id: str) -> dict[str, Any]:
     summary = report.summary
+    trace = report.ai_traces[0] if report.ai_traces else None
     return {
         "run_id": run_id,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -72,6 +73,8 @@ def _metadata_for(report: ScanReport, run_id: str) -> dict[str, Any]:
         "log_count": summary.log_count,
         "issue_count": summary.issue_count,
         "severity_counts": summary.severity_counts,
+        "runtime_id": trace.runtime_id if trace else "",
+        "runtime_version": trace.runtime_version if trace else "",
     }
 
 

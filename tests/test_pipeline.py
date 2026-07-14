@@ -16,8 +16,47 @@ if str(SRC) not in sys.path:
 from logpilot.config import load_config
 from logpilot.history import list_history_runs, load_history_run
 from logpilot.pipeline import run_scan
+from logpilot.runtime import RuntimeExecution, RuntimeInfo
 import logpilot.web as web_module
 from logpilot.web import _html, build_server
+
+
+class FakeRuntimeRegistry:
+    def __init__(self) -> None:
+        self.runtime = RuntimeInfo(
+            "codex",
+            "Codex",
+            "codex",
+            "online",
+            "C:/tools/codex.cmd",
+            "codex-cli test",
+        )
+
+    def list(self):
+        return [self.runtime]
+
+    def refresh(self):
+        return self.list()
+
+    def resolve(self, runtime_id):
+        return self.runtime
+
+
+class FakeRuntimeExecutor:
+    def execute(self, runtime, prompt, repo_root, schema, model="", timeout_seconds=180):
+        logs = json.loads(prompt)["logs"]
+        findings = [
+            {
+                "log_call_id": log["log_call_id"],
+                "has_issue": False,
+                "severity": "low",
+                "title": "无需调整",
+                "reason": "测试运行时未发现新增问题。",
+                "suggestion": "保持现状。",
+            }
+            for log in logs
+        ]
+        return RuntimeExecution("codex", "ok", json.dumps({"findings": findings}, ensure_ascii=False), duration_ms=1)
 
 
 class PipelineTests(unittest.TestCase):
@@ -85,6 +124,8 @@ class PipelineTests(unittest.TestCase):
                         "    - console.log",
                         "ai:",
                         "  enabled: true",
+                        "  runtime: claude",
+                        "  timeout_seconds: 45",
                         "scan:",
                         "  exclude:",
                         "    - .git",
@@ -96,6 +137,8 @@ class PipelineTests(unittest.TestCase):
 
             config = load_config(repo)
             self.assertTrue(config.ai.enabled)
+            self.assertEqual(config.ai.runtime, "claude")
+            self.assertEqual(config.ai.timeout_seconds, 45)
             self.assertEqual(config.rules.forbidden_logs, ["print", "console.log"])
             self.assertIn("vendor", config.scan.exclude)
 
@@ -114,6 +157,10 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("本地日志治理", html)
         self.assertNotIn('id="status"', html)
         self.assertIn("历史记录", html)
+        self.assertIn('id="runtimeTab"', html)
+        self.assertIn('id="runtimeSelect"', html)
+        self.assertIn('id="runtimePanel"', html)
+        self.assertIn("/api/runtimes", html)
         self.assertIn("补丁预览", html)
         self.assertIn("issueDetail", html)
         self.assertIn("/api/scan", html)
@@ -133,7 +180,12 @@ class PipelineTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            server = build_server(repo, port=0)
+            server = build_server(
+                repo,
+                port=0,
+                runtime_registry=FakeRuntimeRegistry(),
+                runtime_executor=FakeRuntimeExecutor(),
+            )
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
@@ -150,6 +202,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(payload["repository"], str(repo.resolve()))
                 self.assertGreaterEqual(payload["report"]["summary"]["log_count"], 1)
                 self.assertEqual(len(payload["history"]), 1)
+                self.assertEqual(payload["history"][0]["runtime_id"], "codex")
                 self.assertTrue((repo / ".logpilot" / "report.json").exists())
 
                 with urllib.request.urlopen(f"http://{host}:{port}/api/history", timeout=10) as history_response:

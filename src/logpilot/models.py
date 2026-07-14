@@ -48,6 +48,9 @@ class AiTrace:
     prompt: str
     raw_response: str = ""
     error: str = ""
+    runtime_id: str = ""
+    runtime_version: str = ""
+    duration_ms: int = 0
 
 
 @dataclass(slots=True)

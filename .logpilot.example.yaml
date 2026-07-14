@@ -13,8 +13,9 @@ rules:
 
 ai:
   enabled: false
-  provider: openai_compatible
-  model: gpt-4.1-mini
+  runtime: auto
+  model: ""
+  timeout_seconds: 180
 
 scan:
   exclude:
