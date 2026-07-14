@@ -63,6 +63,7 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("debug_log", kinds)
             self.assertIn("sensitive_log", kinds)
             self.assertIn("missing_exception_log", kinds)
+            self.assertIn("日志信息价值过低", {issue.title for issue in report.issues})
             self.assertIn("-    print('debug')", patch.read_text(encoding="utf-8"))
 
             payload = json.loads(report_json.read_text(encoding="utf-8"))
@@ -100,12 +101,21 @@ class PipelineTests(unittest.TestCase):
 
     def test_web_shell_contains_analysis_controls(self) -> None:
         html = _html()
-        self.assertIn("LogPilot Analysis Workbench", html)
+        self.assertIn("LogPilot 本地分析工作台", html)
         self.assertIn("repoPath", html)
         self.assertIn("browseButton", html)
         self.assertIn("开始分析", html)
+        self.assertIn('class="sidebar"', html)
+        self.assertIn("分析概览", html)
+        self.assertIn("问题清单", html)
+        self.assertIn('id="historyCount"', html)
+        self.assertIn('id="toastRegion"', html)
+        self.assertIn("showToast", html)
+        self.assertNotIn("本地日志治理", html)
+        self.assertNotIn('id="status"', html)
         self.assertIn("历史记录", html)
-        self.assertIn("Patch 预览", html)
+        self.assertIn("补丁预览", html)
+        self.assertIn("issueDetail", html)
         self.assertIn("/api/scan", html)
         self.assertIn("/api/browse", html)
 

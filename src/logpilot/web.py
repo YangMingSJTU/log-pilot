@@ -54,7 +54,7 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                 payload = self._read_json()
                 target = _resolve_repo_path(str(payload.get("path", "")))
                 if not target.exists() or not target.is_dir():
-                    self._send_json({"error": f"Repository path does not exist: {target}"}, HTTPStatus.BAD_REQUEST)
+                    self._send_json({"error": f"仓库路径不存在：{target}"}, HTTPStatus.BAD_REQUEST)
                     return
 
                 report = run_scan(target)
@@ -75,7 +75,7 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
         def _handle_browse(self) -> None:
             if not browse_lock.acquire(blocking=False):
                 self._send_json(
-                    {"error": "A repository picker is already open. Close it or wait for it to finish."},
+                    {"error": "已有选择窗口打开，请先关闭或稍后再试。"},
                     HTTPStatus.CONFLICT,
                 )
                 return
@@ -93,7 +93,7 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
         def _send_history_run(self, query: str) -> None:
             run_ids = parse_qs(query).get("run_id", [])
             if not run_ids:
-                self._send_json({"error": "run_id is required."}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": "缺少历史记录 ID。"}, HTTPStatus.BAD_REQUEST)
                 return
             try:
                 self._send_json(load_history_run(state["artifacts"], run_ids[0]))
@@ -105,13 +105,13 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"
             loaded = json.loads(raw)
             if not isinstance(loaded, dict):
-                raise ValueError("JSON body must be an object.")
+                raise ValueError("请求内容必须是 JSON 对象。")
             return loaded
 
         def _send_file(self, path: Path, content_type: str) -> None:
             if not path.exists():
                 self._send_json(
-                    {"error": f"Artifact not found: {path.name}", "repository": str(state["repo_root"])},
+                    {"error": f"产物不存在：{path.name}", "repository": str(state["repo_root"])},
                     HTTPStatus.NOT_FOUND,
                 )
                 return
@@ -181,10 +181,10 @@ finally:
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Folder picker timed out. Type the path manually or try again.") from exc
+        raise RuntimeError("选择窗口超时，请手动输入路径或重试。") from exc
 
     if result.returncode != 0:
-        message = result.stderr.strip() or "Folder picker failed. Type the path manually or try again."
+        message = result.stderr.strip() or "选择窗口打开失败，请手动输入路径或重试。"
         raise RuntimeError(message)
     selected = result.stdout.strip()
     return Path(selected).resolve() if selected else None
@@ -192,7 +192,7 @@ finally:
 
 def _resolve_repo_path(raw_path: str) -> Path:
     if not raw_path.strip():
-        raise ValueError("Repository path is required.")
+        raise ValueError("请先输入仓库路径。")
     return Path(raw_path).expanduser().resolve()
 
 
@@ -211,214 +211,650 @@ def _html() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LogPilot Analysis Workbench</title>
+  <title>LogPilot 本地分析工作台</title>
   <style>
+    /* Compact operations-console layout inspired by the supplied reference. */
     :root {
-      color-scheme: light;
-      --bg: #f4f6f8;
-      --panel: #ffffff;
-      --ink: #172033;
-      --muted: #687386;
-      --line: #d7dee8;
-      --blue: #1f66d1;
-      --blue-dark: #174a9b;
-      --green: #19805a;
-      --amber: #a86608;
-      --red: #c5342e;
-      --code: #111827;
+      color-scheme: dark;
+      --bg: #09090a;
+      --surface: #101011;
+      --surface-2: #141416;
+      --surface-3: #1a1a1d;
+      --ink: #f4f4f5;
+      --muted: #a1a1aa;
+      --subtle: #71717a;
+      --line: #343438;
+      --line-soft: #242427;
+      --blue: #8b5cf6;
+      --blue-strong: #6d28d9;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #fb7185;
+      --purple: #a78bfa;
+      --code: #08080a;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    header {
-      padding: 22px 32px 16px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel);
-    }
-    h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: 0; }
-    p { margin: 0; color: var(--muted); }
-    main { padding: 22px 32px 28px; display: grid; gap: 18px; }
-    .workspace {
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: 12px;
-      align-items: end;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 16px;
-    }
-    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
-    input {
-      width: 100%;
-      height: 42px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 0 12px;
-      font: inherit;
-      color: var(--ink);
-      background: #fff;
-    }
+    button, input { font: inherit; }
     button {
-      height: 42px;
-      border: 0;
-      border-radius: 6px;
-      padding: 0 18px;
-      background: var(--blue);
+      height: 40px;
+      padding: 0 14px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: var(--blue-strong);
       color: #fff;
+      font-size: 13px;
       font-weight: 650;
       cursor: pointer;
       white-space: nowrap;
     }
-    button:hover { background: var(--blue-dark); }
-    button:disabled { opacity: .62; cursor: wait; }
+    button:hover { background: #7c3aed; }
+    button:disabled { opacity: .58; cursor: wait; }
+    button:focus-visible, input:focus-visible {
+      outline: 2px solid var(--purple);
+      outline-offset: 2px;
+    }
     .secondary {
-      background: #e8edf5;
-      color: var(--ink);
-      border: 1px solid var(--line);
-    }
-    .secondary:hover { background: #dde5f1; }
-    .status {
-      min-height: 20px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .tabs {
-      display: flex;
-      gap: 8px;
-      border-bottom: 1px solid var(--line);
-    }
-    .tab {
-      height: 36px;
       background: transparent;
-      color: var(--muted);
-      border: 0;
-      border-radius: 6px 6px 0 0;
-      padding: 0 14px;
-    }
-    .tab.active {
-      background: var(--panel);
+      border: 1px solid #47474d;
       color: var(--ink);
-      border: 1px solid var(--line);
-      border-bottom-color: var(--panel);
-      margin-bottom: -1px;
     }
-    .metrics {
+    .secondary:hover { background: #1d1d20; }
+    .app-shell {
+      min-height: 100vh;
       display: grid;
-      grid-template-columns: repeat(5, minmax(120px, 1fr));
-      gap: 12px;
+      grid-template-columns: 232px minmax(0, 1fr);
+      grid-template-rows: 64px minmax(0, 1fr);
     }
-    .metric, section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
+    .sidebar {
+      grid-column: 1;
+      grid-row: 1 / -1;
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: 64px auto 1fr auto;
+      border-right: 1px solid var(--line);
+      background: #111112;
     }
-    .metric { padding: 16px; }
-    .metric strong { display: block; font-size: 28px; line-height: 1.1; }
-    .metric span { display: block; margin-top: 6px; color: var(--muted); font-size: 13px; }
-    .grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 18px; align-items: start; }
-    section { overflow: hidden; }
-    section h2 {
-      margin: 0;
-      padding: 14px 16px;
-      font-size: 16px;
+    .brand {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 0 20px;
       border-bottom: 1px solid var(--line);
     }
-    .list { max-height: 520px; overflow: auto; }
-    .history-list { max-height: 680px; overflow: auto; }
-    .item { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-    .item:last-child { border-bottom: 0; }
-    .item h3 { margin: 0 0 6px; font-size: 15px; }
-    .item button { margin-top: 10px; height: 34px; padding: 0 12px; }
-    .history-row {
+    .brand strong { font-size: 16px; font-weight: 700; }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
       display: grid;
-      grid-template-columns: 1fr auto;
+      place-items: center;
+      border-radius: 5px;
+      background: var(--ink);
+      color: #151517;
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .sidebar-context {
+      display: grid;
+      gap: 8px;
+      padding: 24px 20px 18px;
+    }
+    .sidebar-context strong {
+      overflow: hidden;
+      color: #fff;
+      font-size: 15px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .eyebrow {
+      color: var(--purple);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .side-nav {
+      display: grid;
+      align-content: start;
+      gap: 4px;
+      padding: 0 12px;
+    }
+    .nav-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 20px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      justify-items: start;
+      padding: 0 12px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--muted);
+      text-align: left;
+    }
+    .nav-item:hover { background: #19191b; color: var(--ink); }
+    .nav-item.active {
+      background: #35105e;
+      border-color: #4c177d;
+      color: #fff;
+    }
+    .nav-icon { color: currentColor; font-size: 16px; }
+    .nav-count {
+      min-width: 22px;
+      padding: 1px 6px;
+      border: 1px solid #45454a;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 10px;
+      text-align: center;
+    }
+    .nav-item.active .nav-count { border-color: #7e3ab2; color: #eee3ff; }
+    .sidebar-footer {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 58px;
+      padding: 0 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .local-dot, .state-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(52, 211, 153, .12);
+    }
+    .topbar {
+      grid-column: 2;
+      grid-row: 1;
+      min-height: 64px;
+      display: grid;
+      grid-template-columns: minmax(160px, .55fr) minmax(360px, 1.45fr) auto;
       gap: 12px;
       align-items: center;
+      padding: 11px 22px;
+      border-bottom: 1px solid var(--line);
+      background: #0d0d0e;
+      backdrop-filter: none;
     }
-    .meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .breadcrumb {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--subtle);
+      font-size: 12px;
+    }
+    .breadcrumb strong {
+      overflow: hidden;
+      color: var(--ink);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .repo-control {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    input {
+      width: 100%;
+      height: 40px;
+      padding: 0 12px;
+      border: 1px solid #414146;
+      border-radius: 4px;
+      background: #111113;
+      color: var(--ink);
+      font-size: 13px;
+      outline: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    input:focus { border-color: var(--purple); box-shadow: none; }
+    main {
+      grid-column: 2;
+      grid-row: 2;
+      min-width: 0;
+      padding: 0;
+      display: block;
+      overflow: auto;
+    }
+    .page-header {
+      min-height: 154px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 30px 48px 26px;
+      border-bottom: 1px solid var(--line);
+    }
+    .page-header h1 {
+      margin: 8px 0 7px;
+      font-size: 30px;
+      line-height: 1.15;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+    .page-path {
+      max-width: 720px;
+      margin: 0;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .engine-state {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .view-panel { padding: 30px 48px 44px; }
+    .summary-section {
+      border: 1px solid var(--line);
+      background: #0d0d0e;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1.25fr repeat(4, minmax(108px, 1fr));
+      gap: 0;
+    }
+    .score-panel, .metric {
+      min-height: 104px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px 18px;
+      border: 0;
+      border-right: 1px solid var(--line-soft);
+      border-radius: 0;
+      background: transparent;
+    }
+    .summary-grid > :last-child { border-right: 0; }
+    .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .score-line { display: flex; align-items: baseline; gap: 8px; }
+    .score-line strong, .metric strong {
+      margin: 0;
+      color: #fff;
+      font-size: 25px;
+      line-height: 1;
+      font-weight: 720;
+    }
+    .score-line span { margin: 0; color: var(--muted); font-size: 11px; }
+    .score-track { height: 2px; background: #2a2a2e; overflow: hidden; }
+    .score-track i {
+      display: block;
+      width: calc(var(--score, 0) * 1%);
+      height: 100%;
+      background: var(--purple);
+    }
+    .metric span { margin: 0; }
+    .workspace-section { margin-top: 32px; }
+    .section-bar {
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 2px;
+    }
+    .section-title { display: flex; align-items: baseline; gap: 10px; }
+    .section-bar h2, section .section-bar h2 {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      font-size: 17px;
+    }
+    .section-count { color: var(--muted); font-size: 11px; }
+    .legend { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 10px; }
+    .legend span { display: flex; align-items: center; gap: 6px; }
+    .legend i { width: 6px; height: 6px; border-radius: 50%; }
+    .legend .high-dot { background: var(--red); }
+    .legend .medium-dot { background: var(--amber); }
+    .legend .low-dot { background: var(--green); }
+    .analysis-workspace {
+      height: max(500px, calc(100vh - 428px));
+      display: grid;
+      grid-template-columns: minmax(320px, .82fr) minmax(470px, 1.18fr);
+      border: 1px solid var(--line);
+      background: #0d0d0e;
+    }
+    .issue-pane, .detail {
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .issue-pane { border-right: 1px solid var(--line); }
+    .pane-heading {
+      flex: 0 0 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      background: #121214;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .06em;
+    }
+    .list { flex: 1; max-height: none; overflow: auto; }
+    .issue-row {
+      width: 100%;
+      height: auto;
+      min-height: 72px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      padding: 13px 16px;
+      border: 0;
+      border-bottom: 1px solid var(--line-soft);
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      white-space: normal;
+    }
+    .issue-row:hover { background: #171719; }
+    .issue-row.active {
+      background: #20112f;
+      box-shadow: inset 2px 0 0 var(--purple);
+    }
+    .issue-title { display: block; margin: 0 0 7px; font-size: 13px; font-weight: 650; }
+    .meta, .muted { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .pill {
       display: inline-block;
-      min-width: 52px;
-      padding: 2px 8px;
-      border-radius: 999px;
+      min-width: 32px;
+      padding: 2px 6px;
+      border-radius: 3px;
       color: #fff;
+      font-size: 10px;
+      line-height: 18px;
       text-align: center;
-      font-size: 12px;
-      margin-right: 8px;
     }
-    .high { background: var(--red); }
-    .medium { background: var(--amber); }
-    .low { background: var(--green); }
-    pre {
-      margin: 0;
-      padding: 16px;
+    .high { background: #6c2630; }
+    .medium { background: #694c14; }
+    .low { background: #16513b; }
+    .debug { background: #47306d; }
+    .detail { min-height: 0; }
+    .detail-body {
+      flex: 0 0 auto;
+      max-height: 230px;
+      display: grid;
+      padding: 18px 20px;
+      gap: 13px;
+      border-bottom: 1px solid var(--line);
       overflow: auto;
-      max-height: 520px;
-      background: var(--code);
-      color: #e8edf7;
-      font-size: 12px;
-      line-height: 1.5;
+      background: #0f0f11;
     }
-    .empty { padding: 16px; color: var(--muted); }
-    .hidden { display: none; }
-    @media (max-width: 900px) {
-      header, main { padding-left: 18px; padding-right: 18px; }
-      .workspace, .metrics, .grid, .history-row { grid-template-columns: 1fr; }
+    .detail-body h3 { margin: 0; font-size: 16px; }
+    .kv { display: grid; grid-template-columns: 58px 1fr; gap: 8px; font-size: 12px; line-height: 1.55; }
+    .kv span:first-child { color: var(--subtle); }
+    .section-tabs {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 18px;
+      padding: 0 18px;
+      border-top: 1px solid var(--line-soft);
+      border-bottom: 1px solid var(--line);
+      background: #121214;
+    }
+    .mini-tab {
+      height: 40px;
+      padding: 0;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .mini-tab:hover { background: transparent; color: var(--ink); }
+    .mini-tab.active {
+      border: 0;
+      border-bottom: 2px solid var(--purple);
+      background: transparent;
+      color: #fff;
+    }
+    pre {
+      flex: 1;
+      margin: 0;
+      min-height: 0;
+      max-height: none;
+      padding: 18px 20px;
+      overflow: auto;
+      background: var(--code);
+      color: #d4d4d8;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .empty { padding: 24px 16px; color: var(--muted); font-size: 12px; }
+    .history-table { border: 1px solid var(--line); background: #0d0d0e; }
+    .history-header {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.5fr) 90px 1fr 92px;
+      gap: 18px;
+      align-items: center;
+      min-height: 38px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .05em;
+    }
+    .history-list { max-height: none; overflow: auto; }
+    .history-row {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.5fr) 90px 1fr 92px;
+      gap: 18px;
+      align-items: center;
+      min-height: 74px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .history-row:last-child { border-bottom: 0; }
+    .history-row h3 { margin: 0 0 5px; font-size: 13px; }
+    .history-score strong { font-size: 17px; }
+    .history-score span { color: var(--muted); font-size: 10px; }
+    .history-stats { color: var(--muted); font-size: 11px; line-height: 1.7; }
+    .history-row button { justify-self: end; }
+    .toast-region {
+      position: fixed;
+      top: 82px;
+      right: 24px;
+      z-index: 100;
+      width: min(380px, calc(100vw - 32px));
+      pointer-events: none;
+    }
+    .toast {
+      --toast-accent: var(--blue);
+      min-height: 52px;
+      display: grid;
+      grid-template-columns: 8px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 11px 14px 11px 12px;
+      border: 1px solid #3f3f46;
+      border-radius: 4px;
+      background: #1a1a1d;
+      color: var(--ink);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .44);
+      pointer-events: auto;
+      animation: toast-in .18s ease-out;
+    }
+    .toast::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--toast-accent);
+    }
+    .toast.success { --toast-accent: var(--green); }
+    .toast.warning { --toast-accent: var(--amber); }
+    .toast.error { --toast-accent: var(--red); }
+    .toast.leaving { animation: toast-out .16s ease-in forwards; }
+    .toast-message { min-width: 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+    .danger { color: var(--red); }
+    .warning { color: var(--amber); }
+    .success { color: var(--green); }
+    .hidden { display: none !important; }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toast-out { to { opacity: 0; transform: translateY(-6px); } }
+
+    @media (max-width: 1080px) {
+      .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
+      .topbar, main { grid-column: 2; }
+      .topbar { grid-template-columns: minmax(0, 1fr) auto; }
+      .breadcrumb { display: none; }
+      .page-header, .view-panel { padding-left: 28px; padding-right: 28px; }
+      .analysis-workspace { grid-template-columns: minmax(300px, .85fr) minmax(410px, 1.15fr); }
+    }
+    @media (max-width: 820px) {
+      .app-shell { display: block; }
+      .sidebar {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        grid-template-rows: 64px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand { border-bottom: 0; }
+      .sidebar-context, .sidebar-footer { display: none; }
+      .side-nav { display: flex; justify-content: flex-end; align-items: center; padding: 0 14px; }
+      .nav-item { width: auto; grid-template-columns: 18px auto auto; }
+      .topbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        padding: 10px 16px;
+      }
+      main { overflow: visible; }
+      .page-header { min-height: 132px; padding: 24px 20px; }
+      .page-header h1 { font-size: 26px; }
+      .view-panel { padding: 22px 20px 32px; }
+      .analysis-workspace { height: auto; grid-template-columns: 1fr; }
+      .issue-pane { height: 390px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .detail { min-height: 560px; }
+      .history-header { display: none; }
+      .history-row { grid-template-columns: 1fr auto; }
+      .history-score, .history-stats { display: none; }
+      .toast-region { top: auto; right: 16px; bottom: 16px; }
+    }
+    @media (max-width: 560px) {
+      .sidebar { grid-template-columns: 1fr; grid-template-rows: 56px auto; }
+      .brand { height: 56px; padding: 0 16px; }
+      .side-nav { justify-content: stretch; padding: 8px; border-top: 1px solid var(--line-soft); }
+      .nav-item { flex: 1; justify-items: center; grid-template-columns: 18px auto; }
+      .nav-count { display: none; }
+      .topbar { grid-template-columns: 1fr; }
+      .repo-control { grid-template-columns: 1fr auto; }
+      #scanButton { width: 100%; }
+      .engine-state { display: none; }
+      .summary-grid { grid-template-columns: 1fr 1fr; }
+      .score-panel { grid-column: 1 / -1; }
+      .summary-grid > * { border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+      .summary-grid > :nth-child(2n + 1) { border-right: 0; }
+      .summary-grid > :nth-last-child(-n + 2) { border-bottom: 0; }
+      .legend { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .toast, .toast.leaving { animation: none; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>LogPilot 本地分析工作台</h1>
-    <p>选择或输入本地仓库路径，点击开始分析，查看日志质量问题、建议、历史记录和 Patch 预览。</p>
-  </header>
-  <main>
-    <section class="workspace">
-      <div>
-        <label for="repoPath">仓库路径</label>
-        <input id="repoPath" type="text" spellcheck="false" placeholder="例如 D:\\GitHub\\log-pilot">
-        <div class="status" id="status">正在读取默认仓库...</div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">LP</span><strong>LogPilot</strong></div>
+      <div class="sidebar-context">
+        <span class="eyebrow">当前仓库</span>
+        <strong id="sidebarRepoName">未选择仓库</strong>
       </div>
-      <button class="secondary" id="browseButton" type="button">选择仓库</button>
+      <nav class="side-nav" aria-label="主要导航">
+        <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true">◎</span><span>分析概览</span></button>
+        <button class="nav-item" id="historyTab" type="button"><span class="nav-icon" aria-hidden="true">◷</span><span>历史记录</span><span class="nav-count" id="historyCount">0</span></button>
+      </nav>
+      <div class="sidebar-footer"><span class="local-dot"></span><span>本地模式</span></div>
+    </aside>
+    <header class="topbar">
+      <div class="breadcrumb"><span>LogPilot</span><span>/</span><strong id="headerRepoName">未选择仓库</strong></div>
+      <div class="repo-control">
+        <input id="repoPath" type="text" spellcheck="false" aria-label="仓库路径" placeholder="D:\\GitHub\\log-pilot">
+        <button class="secondary" id="browseButton" type="button">选择仓库</button>
+      </div>
       <button id="scanButton" type="button">开始分析</button>
-    </section>
-    <nav class="tabs" aria-label="LogPilot views">
-      <button class="tab active" id="currentTab" type="button">当前分析</button>
-      <button class="tab" id="historyTab" type="button">历史记录</button>
-    </nav>
-    <div id="currentPanel">
-      <div class="metrics" id="metrics"></div>
-      <div class="grid">
-        <section>
-          <h2>问题列表</h2>
-          <div class="list" id="issues"></div>
-        </section>
-        <section>
-          <h2>Patch 预览</h2>
-          <pre id="patch">等待分析结果...</pre>
+    </header>
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <main>
+      <section class="page-header">
+        <div>
+          <div class="eyebrow">仓库分析</div>
+          <h1 id="pageTitle">分析概览</h1>
+          <p class="page-path" id="pageRepoPath">选择一个本地仓库开始分析</p>
+        </div>
+        <div class="engine-state"><span class="state-dot"></span><span>规则引擎已就绪</span></div>
+      </section>
+      <div class="view-panel" id="currentPanel">
+        <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
+        <section class="workspace-section">
+          <div class="section-bar">
+            <div class="section-title"><h2>问题清单</h2><span class="section-count" id="issueCountLabel">等待分析</span></div>
+            <div class="legend"><span><i class="high-dot"></i>高风险</span><span><i class="medium-dot"></i>中风险</span><span><i class="low-dot"></i>低风险</span></div>
+          </div>
+          <div class="analysis-workspace">
+            <section class="issue-pane">
+              <div class="pane-heading"><span>检测结果</span><span>文件位置</span></div>
+              <div class="list" id="issues"></div>
+            </section>
+            <section class="detail">
+              <div class="pane-heading"><span>问题详情</span><span>规则建议</span></div>
+            <div class="detail-body" id="issueDetail"></div>
+            <div class="section-tabs">
+              <button class="mini-tab active" id="patchTab" type="button">补丁预览</button>
+              <button class="mini-tab" id="logsTab" type="button">日志调用</button>
+              <button class="mini-tab" id="aiTab" type="button">模型调试</button>
+            </div>
+            <pre id="detailPre">等待分析结果</pre>
+            </section>
+          </div>
         </section>
       </div>
-      <div class="grid">
-        <section>
-          <h2>日志调用</h2>
-          <div class="list" id="logs"></div>
-        </section>
-        <section>
-          <h2>AI 调试信息</h2>
-          <div class="list" id="ai"></div>
-        </section>
-      </div>
-    </div>
-    <section id="historyPanel" class="hidden">
-      <h2>历史分析结果</h2>
-      <div class="history-list" id="historyList"></div>
-    </section>
-  </main>
+      <section id="historyPanel" class="view-panel hidden">
+        <div class="section-bar"><div class="section-title"><h2>分析历史</h2><span class="section-count">按时间倒序排列</span></div></div>
+        <div class="history-table">
+          <div class="history-header"><span>仓库与时间</span><span>评分</span><span>扫描结果</span><span>操作</span></div>
+          <div class="history-list" id="historyList"></div>
+        </div>
+      </section>
+    </main>
+  </div>
   <script>
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -427,16 +863,29 @@ def _html() -> str:
       path: "",
       scanning: false,
       browsing: false,
-      history: []
+      history: [],
+      report: null,
+      patch: "",
+      selectedIssueId: "",
+      detailMode: "patch"
     };
     const repoPath = document.querySelector("#repoPath");
     const browseButton = document.querySelector("#browseButton");
     const scanButton = document.querySelector("#scanButton");
-    const statusLine = document.querySelector("#status");
+    const toastRegion = document.querySelector("#toastRegion");
+    const sidebarRepoName = document.querySelector("#sidebarRepoName");
+    const headerRepoName = document.querySelector("#headerRepoName");
+    const pageTitle = document.querySelector("#pageTitle");
+    const pageRepoPath = document.querySelector("#pageRepoPath");
+    const historyCount = document.querySelector("#historyCount");
+    const issueCountLabel = document.querySelector("#issueCountLabel");
     const currentTab = document.querySelector("#currentTab");
     const historyTab = document.querySelector("#historyTab");
     const currentPanel = document.querySelector("#currentPanel");
     const historyPanel = document.querySelector("#historyPanel");
+    const patchTab = document.querySelector("#patchTab");
+    const logsTab = document.querySelector("#logsTab");
+    const aiTab = document.querySelector("#aiTab");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
     browseButton.addEventListener("click", browseRepository);
@@ -445,6 +894,9 @@ def _html() -> str:
     });
     currentTab.addEventListener("click", () => showTab("current"));
     historyTab.addEventListener("click", () => showTab("history"));
+    patchTab.addEventListener("click", () => setDetailMode("patch"));
+    logsTab.addEventListener("click", () => setDetailMode("logs"));
+    aiTab.addEventListener("click", () => setDetailMode("ai"));
 
     async function init() {
       try {
@@ -453,14 +905,12 @@ def _html() -> str:
         state.path = payload.repository || "";
         state.history = payload.history || [];
         repoPath.value = state.path;
+        updateRepositoryIdentity(state.path);
         renderHistory(state.history);
-        statusLine.textContent = payload.has_report
-          ? "已读取最新分析结果，可重新点击开始分析。"
-          : "请选择或输入仓库路径后点击开始分析。";
         if (payload.has_report) await loadReport();
         else renderEmpty();
       } catch (error) {
-        statusLine.textContent = `初始化失败：${error.message}`;
+        showToast(`初始化失败：${error.message}`, "error");
         renderEmpty();
       }
     }
@@ -468,7 +918,7 @@ def _html() -> str:
     async function browseRepository() {
       if (state.browsing) return;
       setBrowsing(true);
-      statusLine.textContent = "正在打开文件夹选择窗口...";
+      showToast("正在打开仓库选择器...", "info", 0);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 125000);
       try {
@@ -476,14 +926,16 @@ def _html() -> str:
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "选择仓库失败");
         if (payload.cancelled) {
-          statusLine.textContent = "已取消选择。";
+          showToast("已取消选择", "info");
           return;
         }
+        state.path = payload.path;
         repoPath.value = payload.path;
-        statusLine.textContent = `已选择仓库：${payload.path}`;
+        updateRepositoryIdentity(state.path);
+        showToast("仓库路径已更新", "success");
       } catch (error) {
         const message = error.name === "AbortError" ? "选择窗口超时，请手动输入路径或重试。" : error.message;
-        statusLine.textContent = `选择失败：${message}`;
+        showToast(`选择失败：${message}`, "error");
       } finally {
         clearTimeout(timeoutId);
         setBrowsing(false);
@@ -494,11 +946,11 @@ def _html() -> str:
       if (state.scanning) return;
       const target = path.trim();
       if (!target) {
-        statusLine.textContent = "请先输入或选择本地仓库路径。";
+        showToast("请先输入或选择本地仓库路径", "warning");
         return;
       }
       setScanning(true);
-      statusLine.textContent = "正在分析仓库，较大的项目可能需要一些时间...";
+      showToast("正在分析仓库，请稍候...", "info", 0);
       try {
         const response = await fetch("/api/scan", {
           method: "POST",
@@ -510,14 +962,14 @@ def _html() -> str:
         state.path = payload.repository;
         state.history = payload.history || [];
         repoPath.value = state.path;
+        updateRepositoryIdentity(state.path);
         renderReport(payload.report);
         renderHistory(state.history);
         await loadPatch();
         showTab("current");
-        const runText = payload.run ? `，已保存历史记录 ${payload.run.run_id}` : "";
-        statusLine.textContent = `分析完成：${state.path}${runText}`;
+        showToast("分析完成，结果已更新", "success");
       } catch (error) {
-        statusLine.textContent = `分析失败：${error.message}`;
+        showToast(`分析失败：${error.message}`, "error");
       } finally {
         setScanning(false);
       }
@@ -534,21 +986,44 @@ def _html() -> str:
     async function loadPatch() {
       const response = await fetch("/api/patch");
       const text = await response.text();
-      document.querySelector("#patch").textContent = response.ok ? text : "暂无 Patch 产物。";
+      state.patch = response.ok ? text : "暂无补丁产物。";
+      renderDetailContent();
     }
 
     async function loadHistoryRun(runId) {
-      statusLine.textContent = `正在读取历史记录：${runId}`;
+      showToast("正在读取历史分析...", "info", 0);
       try {
         const response = await fetch(`/api/history/run?run_id=${encodeURIComponent(runId)}`);
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "历史记录读取失败");
         renderReport(payload.report);
-        document.querySelector("#patch").textContent = payload.patch || "暂无 Patch 产物。";
+        state.patch = payload.patch || "暂无补丁产物。";
+        if (payload.metadata && payload.metadata.repository) {
+          updateRepositoryIdentity(payload.metadata.repository);
+        }
+        renderDetailContent();
         showTab("current");
-        statusLine.textContent = `已加载历史记录：${payload.metadata.created_at}`;
+        showToast("历史分析已加载", "success");
       } catch (error) {
-        statusLine.textContent = `历史记录读取失败：${error.message}`;
+        showToast(`历史记录读取失败：${error.message}`, "error");
+      }
+    }
+
+    function showToast(message, type = "info", duration = null) {
+      const current = toastRegion.firstElementChild;
+      if (current) current.remove();
+      const toast = document.createElement("div");
+      toast.className = `toast ${type}`;
+      toast.setAttribute("role", type === "error" ? "alert" : "status");
+      toast.innerHTML = `<div class="toast-message">${esc(message)}</div>`;
+      toastRegion.appendChild(toast);
+      const hideAfter = duration ?? (type === "error" ? 5200 : type === "warning" ? 3800 : 2800);
+      if (hideAfter > 0) {
+        window.setTimeout(() => {
+          if (!toast.isConnected) return;
+          toast.classList.add("leaving");
+          window.setTimeout(() => toast.remove(), 170);
+        }, hideAfter);
       }
     }
 
@@ -564,6 +1039,14 @@ def _html() -> str:
       browseButton.textContent = value ? "选择中..." : "选择仓库";
     }
 
+    function setDetailMode(mode) {
+      state.detailMode = mode;
+      patchTab.classList.toggle("active", mode === "patch");
+      logsTab.classList.toggle("active", mode === "logs");
+      aiTab.classList.toggle("active", mode === "ai");
+      renderDetailContent();
+    }
+
     function showTab(name) {
       const showHistory = name === "history";
       currentPanel.classList.toggle("hidden", showHistory);
@@ -572,74 +1055,161 @@ def _html() -> str:
       historyTab.classList.toggle("active", showHistory);
     }
 
+    function repositoryName(path) {
+      const normalized = String(path || "").replace(/[\\/]+$/, "");
+      return normalized.split(/[\\/]/).filter(Boolean).pop() || "未选择仓库";
+    }
+
+    function updateRepositoryIdentity(path) {
+      const name = repositoryName(path);
+      sidebarRepoName.textContent = name;
+      headerRepoName.textContent = name;
+      pageTitle.textContent = name === "未选择仓库" ? "分析概览" : name;
+      pageRepoPath.textContent = path || "选择一个本地仓库开始分析";
+    }
+
     function renderEmpty() {
-      document.querySelector("#metrics").innerHTML = [
-        ["Score", "-"], ["Files", "-"], ["Logs", "-"], ["Issues", "-"], ["High / Medium / Low", "-"]
-      ].map(([label, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`).join("");
-      document.querySelector("#issues").innerHTML = '<div class="empty">还没有分析结果。</div>';
-      document.querySelector("#logs").innerHTML = '<div class="empty">点击开始分析后会展示日志调用。</div>';
-      document.querySelector("#ai").innerHTML = '<div class="empty">AI 默认关闭，当前仅展示规则分析结果。</div>';
-      document.querySelector("#patch").textContent = "等待分析结果...";
+      state.report = null;
+      state.patch = "";
+      state.selectedIssueId = "";
+      issueCountLabel.textContent = "等待分析";
+      document.querySelector("#metrics").innerHTML = summaryMarkup(null);
+      document.querySelector("#issues").innerHTML = '<div class="empty">暂无分析结果</div>';
+      document.querySelector("#issueDetail").innerHTML = '<div class="muted">选择仓库并开始分析。</div>';
+      document.querySelector("#detailPre").textContent = "等待分析结果";
     }
 
     function renderReport(report) {
+      state.report = report;
+      state.selectedIssueId = (report.issues && report.issues[0] && report.issues[0].id) || "";
+      issueCountLabel.textContent = `${(report.issues || []).length} 项问题`;
       renderMetrics(report.summary);
       renderIssues(report.issues || []);
-      renderLogs(report.logs || []);
-      renderAi(report.ai_traces || []);
+      renderIssueDetail();
+      renderDetailContent();
     }
 
     function renderMetrics(summary) {
+      document.querySelector("#metrics").innerHTML = summaryMarkup(summary);
+    }
+
+    function summaryMarkup(summary) {
+      if (!summary) {
+        return `
+          <div class="score-panel"><span class="metric-label">治理评分</span><div class="score-line"><strong>-</strong><span>未分析</span></div><div class="score-track" style="--score:0"><i></i></div></div>
+          ${metricMarkup("-", "扫描文件")}
+          ${metricMarkup("-", "日志调用")}
+          ${metricMarkup("-", "发现问题")}
+          ${metricMarkup("-", "高 / 中 / 低")}
+        `;
+      }
       const sev = summary.severity_counts || {};
-      document.querySelector("#metrics").innerHTML = [
-        ["Score", `${summary.score}/100`],
-        ["Files", summary.files_scanned],
-        ["Logs", summary.log_count],
-        ["Issues", summary.issue_count],
-        ["High / Medium / Low", `${sev.high || 0} / ${sev.medium || 0} / ${sev.low || 0}`]
-      ].map(([label, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`).join("");
+      return `
+        <div class="score-panel"><span class="metric-label">治理评分</span><div class="score-line"><strong>${esc(summary.score)}</strong><span>/ 100 · ${esc(scoreLabel(summary.score))}</span></div><div class="score-track" style="--score:${esc(summary.score)}"><i></i></div></div>
+        ${metricMarkup(summary.files_scanned, "扫描文件")}
+        ${metricMarkup(summary.log_count, "日志调用")}
+        ${metricMarkup(summary.issue_count, "发现问题")}
+        ${metricMarkup(`${sev.high || 0} / ${sev.medium || 0} / ${sev.low || 0}`, "高 / 中 / 低")}
+      `;
+    }
+
+    function metricMarkup(value, label) {
+      return `<div class="metric"><span class="metric-label">${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+    }
+
+    function scoreLabel(score) {
+      if (score >= 85) return "健康";
+      if (score >= 60) return "需关注";
+      return "高风险";
     }
 
     function renderIssues(issues) {
       const target = document.querySelector("#issues");
-      if (!issues.length) { target.innerHTML = '<div class="empty">没有发现问题。</div>'; return; }
+      if (!issues.length) { target.innerHTML = '<div class="empty">未发现问题</div>'; return; }
       target.innerHTML = issues.map(issue => `
-        <div class="item">
-          <h3><span class="pill ${esc(issue.severity)}">${esc(issue.severity)}</span>${esc(issue.title)}</h3>
-          <div class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(issue.kind)} · ${esc(issue.source)}</div>
-          <p>${esc(issue.reason)}</p>
-          <p>${esc(issue.suggestion)}</p>
-        </div>
+        <button class="issue-row ${issue.id === state.selectedIssueId ? "active" : ""}" type="button" data-issue-id="${esc(issue.id)}">
+          <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
+          <span><span class="issue-title">${esc(issue.title)}</span><span class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(ruleText(issue.kind))}</span></span>
+        </button>
       `).join("");
+      target.querySelectorAll("button[data-issue-id]").forEach(button => {
+        button.addEventListener("click", () => {
+          state.selectedIssueId = button.dataset.issueId;
+          renderIssues(state.report.issues || []);
+          renderIssueDetail();
+        });
+      });
     }
 
-    function renderLogs(logs) {
-      const target = document.querySelector("#logs");
-      if (!logs.length) { target.innerHTML = '<div class="empty">没有识别到日志调用。</div>'; return; }
-      target.innerHTML = logs.map(log => `
-        <div class="item">
-          <h3>${esc(log.callee)} <span class="meta">${esc(log.level)}</span></h3>
-          <div class="meta">${esc(log.file_path)}:${esc(log.line)}</div>
-          <p>${esc(log.message || "<empty>")}</p>
+    function renderIssueDetail() {
+      const detail = document.querySelector("#issueDetail");
+      const issue = selectedIssue();
+      if (!issue) {
+        detail.innerHTML = '<div class="muted">暂无问题详情</div>';
+        return;
+      }
+      detail.innerHTML = `
+        <div>
+          <h3>${esc(issue.title)}</h3>
+          <div class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(issue.source)}</div>
         </div>
-      `).join("");
+        <div class="kv"><span>级别</span><strong class="${esc(issue.severity === "high" ? "danger" : issue.severity === "medium" ? "warning" : "success")}">${esc(severityText(issue.severity))}</strong></div>
+        <div class="kv"><span>原因</span><div>${esc(issue.reason)}</div></div>
+        <div class="kv"><span>建议</span><div>${esc(issue.suggestion)}</div></div>
+      `;
     }
 
-    function renderAi(traces) {
-      const target = document.querySelector("#ai");
-      if (!traces.length) { target.innerHTML = '<div class="empty">AI 未开启，当前仅展示规则分析结果。</div>'; return; }
-      target.innerHTML = traces.map(trace => `
-        <div class="item">
-          <h3>${esc(trace.status)} <span class="meta">${esc(trace.log_call_id)}</span></h3>
-          <p>${esc(trace.error || trace.raw_response || "No response")}</p>
-        </div>
-      `).join("");
+    function renderDetailContent() {
+      const target = document.querySelector("#detailPre");
+      if (state.detailMode === "patch") {
+        target.textContent = state.patch || "暂无补丁产物";
+      } else if (state.detailMode === "logs") {
+        target.textContent = logsText();
+      } else {
+        target.textContent = aiText();
+      }
+    }
+
+    function selectedIssue() {
+      const issues = (state.report && state.report.issues) || [];
+      return issues.find(issue => issue.id === state.selectedIssueId) || issues[0] || null;
+    }
+
+    function logsText() {
+      const logs = (state.report && state.report.logs) || [];
+      if (!logs.length) return "暂无日志调用";
+      return logs.map(log => `${log.file_path}:${log.line}  ${log.level}  ${log.callee}\\n${log.message || "<empty>"}`).join("\\n\\n");
+    }
+
+    function aiText() {
+      const traces = (state.report && state.report.ai_traces) || [];
+      if (!traces.length) return "人工智能未开启，当前为规则分析结果。";
+      return traces.map(trace => `${trace.status}  ${trace.log_call_id}\\n${trace.error || trace.raw_response || "无返回"}`).join("\\n\\n");
+    }
+
+    function severityText(value) {
+      if (value === "high") return "高";
+      if (value === "medium") return "中";
+      if (value === "low") return "低";
+      return value;
+    }
+
+    function ruleText(value) {
+      return ({
+        forbidden_log: "禁用接口",
+        debug_log: "调试日志",
+        low_value_log: "低价值信息",
+        sensitive_log: "敏感数据",
+        duplicate_log: "重复信息",
+        missing_exception_log: "异常记录"
+      })[value] || value;
     }
 
     function renderHistory(runs) {
       const target = document.querySelector("#historyList");
+      historyCount.textContent = runs.length;
       if (!runs.length) {
-        target.innerHTML = '<div class="empty">暂无历史分析结果。完成一次分析后会自动记录。</div>';
+        target.innerHTML = '<div class="empty">暂无历史记录</div>';
         return;
       }
       target.innerHTML = runs.map(run => {
@@ -647,17 +1217,24 @@ def _html() -> str:
         return `
           <div class="item history-row">
             <div>
-              <h3>${esc(run.created_at)} <span class="meta">score ${esc(run.score)}/100</span></h3>
-              <div class="meta">${esc(run.repository)}</div>
-              <p>${esc(run.files_scanned)} files · ${esc(run.log_count)} logs · ${esc(run.issue_count)} issues · high/medium/low ${esc(sev.high || 0)}/${esc(sev.medium || 0)}/${esc(sev.low || 0)}</p>
+              <h3>${esc(repositoryName(run.repository))}</h3>
+              <div class="meta">${esc(formatTime(run.created_at))} · ${esc(run.repository)}</div>
             </div>
-            <button type="button" data-run-id="${esc(run.run_id)}">查看结果</button>
+            <div class="history-score"><strong>${esc(run.score)}</strong><span> / 100</span></div>
+            <div class="history-stats">${esc(run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
+            <button class="secondary" type="button" data-run-id="${esc(run.run_id)}">查看</button>
           </div>
         `;
       }).join("");
       target.querySelectorAll("button[data-run-id]").forEach(button => {
         button.addEventListener("click", () => loadHistoryRun(button.dataset.runId));
       });
+    }
+
+    function formatTime(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value || "未知时间";
+      return date.toLocaleString("zh-CN", { hour12: false });
     }
 
     init();
