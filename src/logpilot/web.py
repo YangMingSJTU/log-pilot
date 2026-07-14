@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from .history import list_history_runs, load_history_run
 from .pipeline import run_scan
 
 
@@ -19,25 +22,31 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
             if parsed.path == "/":
                 self._send("text/html; charset=utf-8", _html())
             elif parsed.path == "/api/state":
-                self._send_json(
-                    {
-                        "repository": str(state["repo_root"]),
-                        "has_report": (state["artifacts"] / "report.json").exists(),
-                    }
-                )
+                self._send_json(_state_payload(state))
             elif parsed.path == "/api/report":
                 self._send_file(state["artifacts"] / "report.json", "application/json; charset=utf-8")
             elif parsed.path == "/api/patch":
                 self._send_file(state["artifacts"] / "changes.diff", "text/plain; charset=utf-8")
+            elif parsed.path == "/api/history":
+                self._send_json({"repository": str(state["repo_root"]), "runs": list_history_runs(state["artifacts"])})
+            elif parsed.path == "/api/history/run":
+                self._send_history_run(parsed.query)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path != "/api/scan":
+            if parsed.path == "/api/scan":
+                self._handle_scan()
+            elif parsed.path == "/api/browse":
+                self._handle_browse()
+            else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
-                return
 
+        def log_message(self, format: str, *args) -> None:
+            return
+
+        def _handle_scan(self) -> None:
             try:
                 payload = self._read_json()
                 target = _resolve_repo_path(str(payload.get("path", "")))
@@ -48,12 +57,37 @@ def build_server(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> 
                 report = run_scan(target)
                 state["repo_root"] = target.resolve()
                 state["artifacts"] = target.resolve() / ".logpilot"
-                self._send_json({"repository": str(target.resolve()), "report": report.to_dict()})
+                history = list_history_runs(state["artifacts"])
+                self._send_json(
+                    {
+                        "repository": str(target.resolve()),
+                        "report": report.to_dict(),
+                        "history": history,
+                        "run": history[0] if history else None,
+                    }
+                )
             except Exception as exc:  # Keep the local UI useful during early scanner work.
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
-        def log_message(self, format: str, *args) -> None:
-            return
+        def _handle_browse(self) -> None:
+            try:
+                selected = choose_directory(state["repo_root"])
+                if not selected:
+                    self._send_json({"cancelled": True, "path": ""})
+                    return
+                self._send_json({"cancelled": False, "path": str(selected)})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _send_history_run(self, query: str) -> None:
+            run_ids = parse_qs(query).get("run_id", [])
+            if not run_ids:
+                self._send_json({"error": "run_id is required."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._send_json(load_history_run(state["artifacts"], run_ids[0]))
+            except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
 
         def _read_json(self) -> dict[str, object]:
             length = int(self.headers.get("Content-Length", "0"))
@@ -95,10 +129,73 @@ def serve(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     server.serve_forever()
 
 
+def choose_directory(initial_dir: Path) -> Path | None:
+    if os.name == "nt":
+        try:
+            return _choose_directory_windows(initial_dir)
+        except RuntimeError:
+            pass
+    return _choose_directory_tk(initial_dir)
+
+
+def _choose_directory_windows(initial_dir: Path) -> Path | None:
+    script = r"""
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = "选择 LogPilot 要分析的仓库"
+$dialog.SelectedPath = $env:LOGPILOT_INITIAL_DIR
+$dialog.ShowNewFolderButton = $false
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+  Write-Output $dialog.SelectedPath
+}
+"""
+    env = os.environ.copy()
+    env["LOGPILOT_INITIAL_DIR"] = str(initial_dir)
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Windows folder picker failed.")
+    selected = result.stdout.strip()
+    return Path(selected).resolve() if selected else None
+
+
+def _choose_directory_tk(initial_dir: Path) -> Path | None:
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.askdirectory(
+            parent=root,
+            initialdir=str(initial_dir),
+            title="Select repository for LogPilot analysis",
+        )
+    finally:
+        root.destroy()
+    return Path(selected).resolve() if selected else None
+
+
 def _resolve_repo_path(raw_path: str) -> Path:
     if not raw_path.strip():
         raise ValueError("Repository path is required.")
     return Path(raw_path).expanduser().resolve()
+
+
+def _state_payload(state: dict[str, Path]) -> dict[str, object]:
+    artifacts = state["artifacts"]
+    return {
+        "repository": str(state["repo_root"]),
+        "has_report": (artifacts / "report.json").exists(),
+        "history": list_history_runs(artifacts),
+    }
 
 
 def _html() -> str:
@@ -140,7 +237,7 @@ def _html() -> str:
     main { padding: 22px 32px 28px; display: grid; gap: 18px; }
     .workspace {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       gap: 12px;
       align-items: end;
       background: var(--panel);
@@ -172,10 +269,36 @@ def _html() -> str:
     }
     button:hover { background: var(--blue-dark); }
     button:disabled { opacity: .62; cursor: wait; }
+    .secondary {
+      background: #e8edf5;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .secondary:hover { background: #dde5f1; }
     .status {
       min-height: 20px;
       color: var(--muted);
       font-size: 13px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .tab {
+      height: 36px;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      border-radius: 6px 6px 0 0;
+      padding: 0 14px;
+    }
+    .tab.active {
+      background: var(--panel);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-bottom-color: var(--panel);
+      margin-bottom: -1px;
     }
     .metrics {
       display: grid;
@@ -199,9 +322,17 @@ def _html() -> str:
       border-bottom: 1px solid var(--line);
     }
     .list { max-height: 520px; overflow: auto; }
+    .history-list { max-height: 680px; overflow: auto; }
     .item { padding: 14px 16px; border-bottom: 1px solid var(--line); }
     .item:last-child { border-bottom: 0; }
     .item h3 { margin: 0 0 6px; font-size: 15px; }
+    .item button { margin-top: 10px; height: 34px; padding: 0 12px; }
+    .history-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
     .meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .pill {
       display: inline-block;
@@ -230,14 +361,14 @@ def _html() -> str:
     .hidden { display: none; }
     @media (max-width: 900px) {
       header, main { padding-left: 18px; padding-right: 18px; }
-      .workspace, .metrics, .grid { grid-template-columns: 1fr; }
+      .workspace, .metrics, .grid, .history-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <header>
     <h1>LogPilot 本地分析工作台</h1>
-    <p>输入本地仓库路径，点击开始分析，查看日志质量问题、建议和 Patch 预览。</p>
+    <p>选择或输入本地仓库路径，点击开始分析，查看日志质量问题、建议、历史记录和 Patch 预览。</p>
   </header>
   <main>
     <section class="workspace">
@@ -246,29 +377,40 @@ def _html() -> str:
         <input id="repoPath" type="text" spellcheck="false" placeholder="例如 D:\\GitHub\\log-pilot">
         <div class="status" id="status">正在读取默认仓库...</div>
       </div>
+      <button class="secondary" id="browseButton" type="button">选择仓库</button>
       <button id="scanButton" type="button">开始分析</button>
     </section>
-    <div class="metrics" id="metrics"></div>
-    <div class="grid">
-      <section>
-        <h2>问题列表</h2>
-        <div class="list" id="issues"></div>
-      </section>
-      <section>
-        <h2>Patch 预览</h2>
-        <pre id="patch">等待分析结果...</pre>
-      </section>
+    <nav class="tabs" aria-label="LogPilot views">
+      <button class="tab active" id="currentTab" type="button">当前分析</button>
+      <button class="tab" id="historyTab" type="button">历史记录</button>
+    </nav>
+    <div id="currentPanel">
+      <div class="metrics" id="metrics"></div>
+      <div class="grid">
+        <section>
+          <h2>问题列表</h2>
+          <div class="list" id="issues"></div>
+        </section>
+        <section>
+          <h2>Patch 预览</h2>
+          <pre id="patch">等待分析结果...</pre>
+        </section>
+      </div>
+      <div class="grid">
+        <section>
+          <h2>日志调用</h2>
+          <div class="list" id="logs"></div>
+        </section>
+        <section>
+          <h2>AI 调试信息</h2>
+          <div class="list" id="ai"></div>
+        </section>
+      </div>
     </div>
-    <div class="grid">
-      <section>
-        <h2>日志调用</h2>
-        <div class="list" id="logs"></div>
-      </section>
-      <section>
-        <h2>AI 调试信息</h2>
-        <div class="list" id="ai"></div>
-      </section>
-    </div>
+    <section id="historyPanel" class="hidden">
+      <h2>历史分析结果</h2>
+      <div class="history-list" id="historyList"></div>
+    </section>
   </main>
   <script>
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -276,26 +418,38 @@ def _html() -> str:
     }[char]));
     const state = {
       path: "",
-      scanning: false
+      scanning: false,
+      browsing: false,
+      history: []
     };
     const repoPath = document.querySelector("#repoPath");
+    const browseButton = document.querySelector("#browseButton");
     const scanButton = document.querySelector("#scanButton");
     const statusLine = document.querySelector("#status");
+    const currentTab = document.querySelector("#currentTab");
+    const historyTab = document.querySelector("#historyTab");
+    const currentPanel = document.querySelector("#currentPanel");
+    const historyPanel = document.querySelector("#historyPanel");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
+    browseButton.addEventListener("click", browseRepository);
     repoPath.addEventListener("keydown", event => {
       if (event.key === "Enter") startScan(repoPath.value);
     });
+    currentTab.addEventListener("click", () => showTab("current"));
+    historyTab.addEventListener("click", () => showTab("history"));
 
     async function init() {
       try {
         const response = await fetch("/api/state");
         const payload = await response.json();
         state.path = payload.repository || "";
+        state.history = payload.history || [];
         repoPath.value = state.path;
+        renderHistory(state.history);
         statusLine.textContent = payload.has_report
-          ? "已读取上一次分析结果，可重新点击开始分析。"
-          : "请输入仓库路径后点击开始分析。";
+          ? "已读取最新分析结果，可重新点击开始分析。"
+          : "请选择或输入仓库路径后点击开始分析。";
         if (payload.has_report) await loadReport();
         else renderEmpty();
       } catch (error) {
@@ -304,11 +458,32 @@ def _html() -> str:
       }
     }
 
+    async function browseRepository() {
+      if (state.browsing) return;
+      setBrowsing(true);
+      statusLine.textContent = "正在打开文件夹选择窗口...";
+      try {
+        const response = await fetch("/api/browse", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "选择仓库失败");
+        if (payload.cancelled) {
+          statusLine.textContent = "已取消选择。";
+          return;
+        }
+        repoPath.value = payload.path;
+        statusLine.textContent = `已选择仓库：${payload.path}`;
+      } catch (error) {
+        statusLine.textContent = `选择失败：${error.message}`;
+      } finally {
+        setBrowsing(false);
+      }
+    }
+
     async function startScan(path) {
       if (state.scanning) return;
       const target = path.trim();
       if (!target) {
-        statusLine.textContent = "请先输入本地仓库路径。";
+        statusLine.textContent = "请先输入或选择本地仓库路径。";
         return;
       }
       setScanning(true);
@@ -322,10 +497,14 @@ def _html() -> str:
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "扫描失败");
         state.path = payload.repository;
+        state.history = payload.history || [];
         repoPath.value = state.path;
         renderReport(payload.report);
+        renderHistory(state.history);
         await loadPatch();
-        statusLine.textContent = `分析完成：${state.path}`;
+        showTab("current");
+        const runText = payload.run ? `，已保存历史记录 ${payload.run.run_id}` : "";
+        statusLine.textContent = `分析完成：${state.path}${runText}`;
       } catch (error) {
         statusLine.textContent = `分析失败：${error.message}`;
       } finally {
@@ -334,7 +513,7 @@ def _html() -> str:
     }
 
     async function loadReport() {
-      const [reportResponse] = await Promise.all([fetch("/api/report")]);
+      const reportResponse = await fetch("/api/report");
       const report = await reportResponse.json();
       if (!reportResponse.ok || report.error) throw new Error(report.error || "报告读取失败");
       renderReport(report);
@@ -347,10 +526,39 @@ def _html() -> str:
       document.querySelector("#patch").textContent = response.ok ? text : "暂无 Patch 产物。";
     }
 
+    async function loadHistoryRun(runId) {
+      statusLine.textContent = `正在读取历史记录：${runId}`;
+      try {
+        const response = await fetch(`/api/history/run?run_id=${encodeURIComponent(runId)}`);
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "历史记录读取失败");
+        renderReport(payload.report);
+        document.querySelector("#patch").textContent = payload.patch || "暂无 Patch 产物。";
+        showTab("current");
+        statusLine.textContent = `已加载历史记录：${payload.metadata.created_at}`;
+      } catch (error) {
+        statusLine.textContent = `历史记录读取失败：${error.message}`;
+      }
+    }
+
     function setScanning(value) {
       state.scanning = value;
       scanButton.disabled = value;
       scanButton.textContent = value ? "分析中..." : "开始分析";
+    }
+
+    function setBrowsing(value) {
+      state.browsing = value;
+      browseButton.disabled = value;
+      browseButton.textContent = value ? "选择中..." : "选择仓库";
+    }
+
+    function showTab(name) {
+      const showHistory = name === "history";
+      currentPanel.classList.toggle("hidden", showHistory);
+      historyPanel.classList.toggle("hidden", !showHistory);
+      currentTab.classList.toggle("active", !showHistory);
+      historyTab.classList.toggle("active", showHistory);
     }
 
     function renderEmpty() {
@@ -359,7 +567,7 @@ def _html() -> str:
       ].map(([label, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`).join("");
       document.querySelector("#issues").innerHTML = '<div class="empty">还没有分析结果。</div>';
       document.querySelector("#logs").innerHTML = '<div class="empty">点击开始分析后会展示日志调用。</div>';
-      document.querySelector("#ai").innerHTML = '<div class="empty">AI 默认关闭，开启后会展示模型请求与返回。</div>';
+      document.querySelector("#ai").innerHTML = '<div class="empty">AI 默认关闭，当前仅展示规则分析结果。</div>';
       document.querySelector("#patch").textContent = "等待分析结果...";
     }
 
@@ -415,6 +623,30 @@ def _html() -> str:
           <p>${esc(trace.error || trace.raw_response || "No response")}</p>
         </div>
       `).join("");
+    }
+
+    function renderHistory(runs) {
+      const target = document.querySelector("#historyList");
+      if (!runs.length) {
+        target.innerHTML = '<div class="empty">暂无历史分析结果。完成一次分析后会自动记录。</div>';
+        return;
+      }
+      target.innerHTML = runs.map(run => {
+        const sev = run.severity_counts || {};
+        return `
+          <div class="item history-row">
+            <div>
+              <h3>${esc(run.created_at)} <span class="meta">score ${esc(run.score)}/100</span></h3>
+              <div class="meta">${esc(run.repository)}</div>
+              <p>${esc(run.files_scanned)} files · ${esc(run.log_count)} logs · ${esc(run.issue_count)} issues · high/medium/low ${esc(sev.high || 0)}/${esc(sev.medium || 0)}/${esc(sev.low || 0)}</p>
+            </div>
+            <button type="button" data-run-id="${esc(run.run_id)}">查看结果</button>
+          </div>
+        `;
+      }).join("");
+      target.querySelectorAll("button[data-run-id]").forEach(button => {
+        button.addEventListener("click", () => loadHistoryRun(button.dataset.runId));
+      });
     }
 
     init();

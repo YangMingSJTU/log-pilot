@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from logpilot.config import load_config
+from logpilot.history import list_history_runs, load_history_run
 from logpilot.pipeline import run_scan
 from logpilot.web import _html, build_server
 
@@ -48,10 +49,13 @@ class PipelineTests(unittest.TestCase):
             report_json = repo / ".logpilot" / "report.json"
             report_md = repo / ".logpilot" / "report.md"
             patch = repo / ".logpilot" / "changes.diff"
+            history = list_history_runs(repo / ".logpilot")
 
             self.assertTrue(report_json.exists())
             self.assertTrue(report_md.exists())
             self.assertTrue(patch.exists())
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["score"], report.summary.score)
             self.assertGreaterEqual(report.summary.log_count, 4)
             kinds = {issue.kind for issue in report.issues}
             self.assertIn("low_value_log", kinds)
@@ -62,6 +66,10 @@ class PipelineTests(unittest.TestCase):
 
             payload = json.loads(report_json.read_text(encoding="utf-8"))
             self.assertEqual(payload["summary"]["issue_count"], len(report.issues))
+            historical = load_history_run(repo / ".logpilot", history[0]["run_id"])
+            self.assertEqual(historical["metadata"]["issue_count"], len(report.issues))
+            self.assertIn("report", historical)
+            self.assertIn("changes.diff", [path.name for path in (repo / ".logpilot" / "runs" / history[0]["run_id"]).iterdir()])
 
     def test_config_loads_yaml_like_file_without_pyyaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,9 +101,12 @@ class PipelineTests(unittest.TestCase):
         html = _html()
         self.assertIn("LogPilot Analysis Workbench", html)
         self.assertIn("repoPath", html)
+        self.assertIn("browseButton", html)
         self.assertIn("开始分析", html)
+        self.assertIn("历史记录", html)
         self.assertIn("Patch 预览", html)
         self.assertIn("/api/scan", html)
+        self.assertIn("/api/browse", html)
 
     def test_web_scan_endpoint_runs_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -127,7 +138,23 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(payload["repository"], str(repo.resolve()))
                 self.assertGreaterEqual(payload["report"]["summary"]["log_count"], 1)
+                self.assertEqual(len(payload["history"]), 1)
                 self.assertTrue((repo / ".logpilot" / "report.json").exists())
+
+                with urllib.request.urlopen(f"http://{host}:{port}/api/history", timeout=10) as history_response:
+                    history_payload = json.loads(history_response.read().decode("utf-8"))
+                self.assertEqual(history_response.status, 200)
+                self.assertEqual(len(history_payload["runs"]), 1)
+
+                run_id = history_payload["runs"][0]["run_id"]
+                with urllib.request.urlopen(
+                    f"http://{host}:{port}/api/history/run?run_id={run_id}",
+                    timeout=10,
+                ) as run_response:
+                    run_payload = json.loads(run_response.read().decode("utf-8"))
+                self.assertEqual(run_response.status, 200)
+                self.assertEqual(run_payload["metadata"]["run_id"], run_id)
+                self.assertIn("patch", run_payload)
             finally:
                 server.shutdown()
                 server.server_close()

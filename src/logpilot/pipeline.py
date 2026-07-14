@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .ai import AiProvider, analyze_with_ai
 from .config import load_config
+from .history import write_history_run
 from .patching import write_patch
 from .reporting import build_report, write_report
 from .rules import analyze_rules
@@ -20,5 +21,6 @@ def run_scan(repo_root: Path, output_dir: Path | None = None, config_path: Path 
     report = build_report(repo_root, files_scanned, logs, issues, ai_traces)
     out = output_dir or repo_root / ".logpilot"
     write_report(report, out)
-    write_patch(repo_root, logs, issues, out)
+    patch_text = write_patch(repo_root, logs, issues, out)
+    write_history_run(report, patch_text, out)
     return report

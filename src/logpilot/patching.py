@@ -6,10 +6,11 @@ from pathlib import Path
 from .models import Issue, LogCall
 
 
-def write_patch(repo_root: Path, logs: list[LogCall], issues: list[Issue], output_dir: Path) -> None:
+def write_patch(repo_root: Path, logs: list[LogCall], issues: list[Issue], output_dir: Path) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     patch = generate_patch(repo_root, logs, issues)
     (output_dir / "changes.diff").write_text(patch, encoding="utf-8")
+    return patch
 
 
 def generate_patch(repo_root: Path, logs: list[LogCall], issues: list[Issue]) -> str:
