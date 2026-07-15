@@ -4,8 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .languages import analyzable_extensions
 
-DEFAULT_FORBIDDEN_LOGS = ["print", "console.log", "System.out.println"]
+
+DEFAULT_FORBIDDEN_LOGS = ["print", "console.log", "System.out.println", "printf", "fprintf", "std::cout"]
 DEFAULT_REQUIRED_FIELDS = ["request_id"]
 DEFAULT_SENSITIVE_FIELDS = ["password", "passwd", "secret", "token", "api_key"]
 DEFAULT_EXCLUDES = [
@@ -41,7 +43,7 @@ class AiConfig:
 class ScanConfig:
     exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     include_extensions: list[str] = field(
-        default_factory=lambda: [".py", ".java", ".js", ".jsx", ".ts", ".tsx"]
+        default_factory=analyzable_extensions
     )
 
 

@@ -19,6 +19,7 @@ LOW_VALUE_MESSAGES = {
     "start payment",
     "hello",
 }
+DELETABLE_DEBUG_CALLEES = {"print", "console.log", "system.out.println", "printf", "std::cout", "qdebug", "vlog"}
 
 
 def analyze_rules(
@@ -53,7 +54,7 @@ def _log_call_issues(logs: list[LogCall], config: RulesConfig) -> list[Issue]:
                     "使用了禁用的日志接口",
                     f"`{log.callee}` 已被配置为禁用的日志接口。",
                     "请改用项目统一的结构化日志组件。",
-                    "delete" if callee in {"print", "console.log", "system.out.println"} else None,
+                    "delete" if callee in DELETABLE_DEBUG_CALLEES else None,
                 )
             )
 
@@ -66,7 +67,7 @@ def _log_call_issues(logs: list[LogCall], config: RulesConfig) -> list[Issue]:
                     "源码中保留了调试日志",
                     "调试级输出可能将实现细节和无效噪声带入生产环境。",
                     "请删除该日志，或将其限制在本地调试范围内。",
-                    "delete" if callee in {"print", "console.log"} else None,
+                    "delete" if callee in DELETABLE_DEBUG_CALLEES else None,
                 )
             )
 

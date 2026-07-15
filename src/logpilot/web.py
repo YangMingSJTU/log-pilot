@@ -313,7 +313,8 @@ def build_server(
                         target,
                         scan.logs,
                         config.scan.exclude,
-                        scan.language_file_counts,
+                        scan.discovered_language_counts,
+                        scan.unrecognized_extension_counts,
                     )
                 self._send_json({"repository": str(target), **settings_payload(target)})
             except RepositoryBusyError as exc:
@@ -650,7 +651,7 @@ def _html() -> str:
     }
     .analysis-options {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       border-top: 1px solid var(--line);
       background: #0f0f11;
     }
@@ -663,7 +664,7 @@ def _html() -> str:
       align-items: center;
       padding: 12px 14px;
     }
-    .analysis-option:first-child { border-right: 1px solid var(--line); }
+    .analysis-option:not(:last-child) { border-right: 1px solid var(--line); }
     .analysis-option-label { color: var(--muted); font-size: 10px; font-weight: 650; }
     .analysis-option-summary {
       min-width: 0;
@@ -915,7 +916,7 @@ def _html() -> str:
     .risk-stat.low-risk { --risk-color: var(--green); }
     #currentPanel { max-width: 1180px; padding-top: 24px; }
     .workspace-section { margin-top: 22px; }
-    .snapshot-banner {
+    .snapshot-banner, .coverage-banner {
       min-height: 48px;
       display: flex;
       align-items: center;
@@ -929,6 +930,9 @@ def _html() -> str:
     }
     .snapshot-copy { display: flex; align-items: center; gap: 9px; color: #f6d572; font-size: 11px; }
     .snapshot-actions { display: flex; gap: 7px; }
+    .coverage-banner { color: #f6d572; font-size: 11px; }
+    .coverage-banner strong { color: #fff; }
+    .coverage-banner.complete { border-color: rgba(52, 211, 153, .28); background: rgba(52, 211, 153, .06); color: var(--green); }
     .section-bar {
       min-height: 48px;
       display: flex;
@@ -1238,7 +1242,7 @@ def _html() -> str:
     .mode-switch { padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
     .mode-switch button { height: 30px; padding: 0 11px; border: 0; background: transparent; box-shadow: none; color: var(--muted); }
     .mode-switch button.active { background: var(--surface-3); color: var(--ink); }
-    .language-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .language-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
     .language-option {
       min-height: 86px;
       display: grid;
@@ -1249,14 +1253,14 @@ def _html() -> str:
       border-right: 1px solid var(--line-soft);
       cursor: pointer;
     }
-    .language-option:last-child { border-right: 0; }
+    .language-option { border-bottom: 1px solid var(--line-soft); }
     .language-option:hover { background: var(--surface-2); }
     .language-option input { margin: 3px 0 0; accent-color: var(--accent); }
     .language-option strong { display: block; margin-bottom: 6px; font-size: 12px; }
     .language-option span { color: var(--muted); font-size: 10px; line-height: 1.5; }
     .language-option em { color: var(--green); font-style: normal; }
     .template-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 190px; }
-    .template-nav { padding: 10px; border-right: 1px solid var(--line); }
+    .template-nav { max-height: 420px; padding: 10px; border-right: 1px solid var(--line); overflow-y: auto; }
     .template-nav button {
       width: 100%;
       height: 42px;
@@ -1533,7 +1537,7 @@ def _html() -> str:
       .analysis-commandbar { grid-template-columns: minmax(0, 1fr) 160px auto; }
       .analysis-options { grid-template-columns: 1fr; }
       .analysis-option { grid-template-columns: auto minmax(150px, 220px) minmax(0, 1fr); }
-      .analysis-option:first-child { border-right: 0; border-bottom: 1px solid var(--line); }
+      .analysis-option:not(:last-child) { border-right: 0; border-bottom: 1px solid var(--line); }
       .analysis-option-summary { grid-column: auto; }
       .scan-step { padding: 0 9px; }
       .summary-grid { grid-template-columns: minmax(160px, 1.2fr) repeat(3, minmax(92px, 1fr)); }
@@ -1648,6 +1652,15 @@ def _html() -> str:
               <div class="preset-control"><select id="analysisTemplatePreset" aria-label="日志模板方案"></select><button class="secondary preset-add" id="addTemplatePreset" type="button" title="新增模板方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button></div>
               <span class="analysis-option-summary" id="analysisTemplateSummary"></span>
             </div>
+            <div class="analysis-option">
+              <span class="analysis-option-label">AI 深度</span>
+              <select id="analysisDepth" aria-label="AI 分析深度">
+                <option value="quick">快速</option>
+                <option value="standard">标准</option>
+                <option value="deep">深度</option>
+              </select>
+              <span class="analysis-option-summary" id="analysisDepthSummary"></span>
+            </div>
           </div>
         </section>
         <section class="scan-progress hidden" id="scanProgress" aria-live="polite">
@@ -1672,6 +1685,7 @@ def _html() -> str:
           <div class="snapshot-copy"><span class="state-dot warning-dot"></span><span>源码已修改，当前结果为分析快照</span></div>
           <div class="snapshot-actions"><button class="secondary" id="rollbackButton" type="button">撤销上次采纳</button><button class="secondary" id="rescanButton" type="button">重新分析</button></div>
         </div>
+        <div class="coverage-banner hidden" id="coverageBanner"></div>
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
         <section class="workspace-section">
           <div class="results-toolbar">
@@ -1821,7 +1835,8 @@ def _html() -> str:
         language_presets: [],
         template_presets: [],
         active_language_preset: "auto",
-        active_template_preset: "auto"
+        active_template_preset: "auto",
+        analysis_depth: "standard"
       },
       languageProfile: { detected_languages: [], template_recommendations: {} },
       settingsLanguages: [],
@@ -1869,6 +1884,7 @@ def _html() -> str:
     const clearSelectionButton = document.querySelector("#clearSelectionButton");
     const batchApplyButton = document.querySelector("#batchApplyButton");
     const snapshotBanner = document.querySelector("#snapshotBanner");
+    const coverageBanner = document.querySelector("#coverageBanner");
     const rollbackButton = document.querySelector("#rollbackButton");
     const rescanButton = document.querySelector("#rescanButton");
     const applyDialog = document.querySelector("#applyDialog");
@@ -1888,8 +1904,10 @@ def _html() -> str:
     const useBuiltinTemplate = document.querySelector("#useBuiltinTemplate");
     const analysisLanguagePreset = document.querySelector("#analysisLanguagePreset");
     const analysisTemplatePreset = document.querySelector("#analysisTemplatePreset");
+    const analysisDepth = document.querySelector("#analysisDepth");
     const analysisLanguageSummary = document.querySelector("#analysisLanguageSummary");
     const analysisTemplateSummary = document.querySelector("#analysisTemplateSummary");
+    const analysisDepthSummary = document.querySelector("#analysisDepthSummary");
     const addLanguagePreset = document.querySelector("#addLanguagePreset");
     const addTemplatePreset = document.querySelector("#addTemplatePreset");
     const settingsLanguagePreset = document.querySelector("#settingsLanguagePreset");
@@ -1929,6 +1947,16 @@ def _html() -> str:
     });
     analysisLanguagePreset.addEventListener("change", () => selectAnalysisPreset("language", analysisLanguagePreset.value));
     analysisTemplatePreset.addEventListener("change", () => selectAnalysisPreset("template", analysisTemplatePreset.value));
+    analysisDepth.addEventListener("change", async () => {
+      const previous = state.repositorySettings.analysis_depth || "standard";
+      state.repositorySettings.analysis_depth = analysisDepth.value;
+      renderAnalysisDepth();
+      if (await persistRepositorySettings(true)) showToast(`AI 分析深度已设为${analysisDepth.options[analysisDepth.selectedIndex].text}`, "success");
+      else {
+        state.repositorySettings.analysis_depth = previous;
+        renderAnalysisDepth();
+      }
+    });
     addLanguagePreset.addEventListener("click", () => openPresetDialog("language"));
     addTemplatePreset.addEventListener("click", () => openPresetDialog("template"));
     loadLanguagePreset.addEventListener("click", () => loadSavedPreset("language", settingsLanguagePreset.value));
@@ -2371,20 +2399,23 @@ def _html() -> str:
       collapseAllButton.disabled = true;
       batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
+      coverageBanner.classList.add("hidden");
       scanProgress.classList.remove("hidden", "failed", "completed");
       incrementalNote.classList.add("hidden");
       renderScanProgress({ status: "queued", stage: "queued", percent: 0, message: "正在创建后台分析任务", completed: 0, total: 0 });
     }
 
     function renderScanProgress(job) {
-      const stageIndexes = { queued: 0, preparing: 0, discovering: 0, parsing: 1, rules: 2, runtime: 3, fixes: 4, reporting: 4, complete: 5 };
+      const stageIndexes = { queued: 0, preparing: 0, discovering: 0, parsing: 1, framework: 2, rules: 2, runtime: 3, ai_missing: 3, fixes: 4, reporting: 4, complete: 5 };
       const titles = {
         queued: "等待开始",
         preparing: "准备分析",
         discovering: "发现源码文件",
         parsing: "解析源码",
+        framework: "识别日志框架",
         rules: "执行本地规则",
         runtime: "运行时分析",
+        ai_missing: "检查日志缺口",
         fixes: "生成修改建议",
         reporting: "保存分析报告",
         complete: "分析完成"
@@ -2680,7 +2711,8 @@ def _html() -> str:
         language_presets: [],
         template_presets: [],
         active_language_preset: "auto",
-        active_template_preset: "auto"
+        active_template_preset: "auto",
+        analysis_depth: "standard"
       };
     }
 
@@ -2862,10 +2894,16 @@ def _html() -> str:
       analysisLanguagePreset.value = languageCustom ? "current" : activePresetId("language");
       analysisTemplatePreset.value = templateCustom ? "current" : activePresetId("template");
       const languageIds = resolvedLanguageIds();
-      analysisLanguageSummary.textContent = languageIds.map(id => languageDefinition(id)?.label || id).join("、") || "等待识别";
+      const languageSummary = languageIds.map(id => {
+        const language = languageDefinition(id);
+        return language ? `${language.label}${language.support_level === "unsupported" ? "（暂不支持）" : ""}` : id;
+      }).join("、") || "等待识别";
+      const unrecognizedCount = Object.values(state.languageProfile.unrecognized_extensions || {}).reduce((total, value) => total + Number(value || 0), 0);
+      analysisLanguageSummary.textContent = unrecognizedCount ? `${languageSummary} · ${unrecognizedCount} 个未知源码文件` : languageSummary;
       analysisTemplateSummary.textContent = templateCustom
         ? `${Object.keys(state.repositorySettings.templates).length} 种自定义模板`
         : activePresetId("template") === "auto" ? "优先沿用仓库日志风格" : "使用已保存模板";
+      renderAnalysisDepth();
 
       settingsLanguagePreset.innerHTML = '<option value="">选择历史方案</option>'
         + languagePresets.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("");
@@ -2874,6 +2912,16 @@ def _html() -> str:
       settingsLanguagePreset.value = activePresetId("language") === "auto" ? "" : activePresetId("language");
       settingsTemplatePreset.value = activePresetId("template") === "auto" ? "" : activePresetId("template");
       updatePresetLibraryActions();
+    }
+
+    function renderAnalysisDepth() {
+      const depth = state.repositorySettings.analysis_depth || "standard";
+      analysisDepth.value = depth;
+      analysisDepthSummary.textContent = {
+        quick: "优先高风险，最多 100 条日志",
+        standard: "完整主流程，限制极端规模",
+        deep: "不限制 AI 分析目标数量"
+      }[depth] || "完整主流程，限制极端规模";
     }
 
     function updatePresetLibraryActions() {
@@ -2897,8 +2945,9 @@ def _html() -> str:
         const checked = settings.language_mode === "auto"
           ? Boolean(profile.recommended)
           : settings.selected_languages.includes(language.id);
+        const support = language.support_level === "unsupported" ? "暂不支持" : language.support_level === "limited" ? "有限支持" : "完整支持";
         const stats = profile.file_count
-          ? `${profile.file_count} 个文件 · ${profile.log_count || 0} 条日志`
+          ? `${profile.file_count} 个文件 · ${profile.log_count || 0} 条日志 · ${support}`
           : "未在仓库中发现";
         return `<label class="language-option"><input type="checkbox" data-language-id="${esc(language.id)}" ${checked ? "checked" : ""} ${settings.language_mode === "auto" ? "disabled" : ""}><span><strong>${esc(language.label)}${profile.recommended ? " <em>推荐</em>" : ""}</strong><span>${esc(stats)}</span></span></label>`;
       }).join("");
@@ -2914,7 +2963,9 @@ def _html() -> str:
     function renderTemplateMeta() {
       const language = languageDefinition(state.templateLanguage);
       templateSource.textContent = templateSourceText(state.templateLanguage, false);
-      templateSupport.textContent = language?.automatic_fix ? "支持自动补充" : "当前仅分析";
+      templateSupport.textContent = language?.automatic_fix
+        ? "支持自动补充"
+        : language?.support_level === "unsupported" ? "暂不支持解析" : "当前仅分析";
       templateSupport.classList.toggle("ready", Boolean(language?.automatic_fix));
       const recommendation = templateRecommendation(state.templateLanguage);
       useRecommendedTemplate.disabled = state.settingsBusy || !recommendation.template;
@@ -2925,6 +2976,7 @@ def _html() -> str:
       profileRepositoryButton.disabled = state.settingsBusy;
       analysisLanguagePreset.disabled = state.settingsBusy;
       analysisTemplatePreset.disabled = state.settingsBusy;
+      analysisDepth.disabled = state.settingsBusy;
       addLanguagePreset.disabled = state.settingsBusy;
       addTemplatePreset.disabled = state.settingsBusy;
       saveSettingsButton.textContent = state.settingsBusy ? "处理中..." : "保存设置";
@@ -2979,6 +3031,7 @@ def _html() -> str:
       batchApplyButton.disabled = true;
       batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
+      coverageBanner.classList.add("hidden");
       scanProgress.classList.add("hidden");
       incrementalNote.classList.add("hidden");
       updateSeverityFilters();
@@ -3014,6 +3067,7 @@ def _html() -> str:
 
     function renderMetrics(summary) {
       document.querySelector("#metrics").innerHTML = summaryMarkup(summary);
+      renderCoverageBanner(summary);
     }
 
     function summaryMarkup(summary) {
@@ -3027,9 +3081,13 @@ def _html() -> str:
         `;
       }
       const sev = summary.severity_counts || {};
+      const hasScore = summary.score !== null && summary.score !== undefined;
+      const scoreValue = hasScore ? summary.score : 0;
+      const scoreDisplay = hasScore ? summary.score : "N/A";
+      const discovered = summary.discovered_files || summary.files_scanned || 0;
       return `
-        <div class="score-panel ${esc(scoreTone(summary.score))}"><div class="score-heading"><span class="metric-label">治理评分</span><span class="score-status">${esc(scoreLabel(summary.score))}</span></div><div class="score-line"><strong>${esc(summary.score)}</strong><span>/ 100</span></div><div class="score-track" style="--score:${esc(summary.score)}"><i></i></div></div>
-        ${metricMarkup(summary.files_scanned, "扫描文件")}
+        <div class="score-panel ${esc(scoreTone(summary))}"><div class="score-heading"><span class="metric-label">治理评分</span><span class="score-status">${esc(scoreLabel(summary))}</span></div><div class="score-line"><strong>${esc(scoreDisplay)}</strong>${hasScore ? "<span>/ 100</span>" : ""}</div><div class="score-track" style="--score:${esc(scoreValue)}"><i></i></div></div>
+        ${metricMarkup(`${summary.files_scanned} / ${discovered}`, "分析覆盖")}
         ${metricMarkup(summary.log_count, "日志调用")}
         ${metricMarkup(summary.issue_count, "发现问题")}
         ${riskMarkup(sev)}
@@ -3049,16 +3107,59 @@ def _html() -> str:
       </div></div>`;
     }
 
-    function scoreLabel(score) {
+    function scoreLabel(summary) {
+      const status = summary.score_status;
+      if (status === "no_log_samples") return "无日志样本";
+      if (status === "insufficient_coverage") return "覆盖不足";
+      if (status === "ai_incomplete") return "AI 未完成";
+      if (status === "scoped") return "范围评分";
+      if (status === "local_only") return "本地规则";
+      const score = summary.score;
       if (score >= 85) return "健康";
       if (score >= 60) return "需关注";
       return "高风险";
     }
 
-    function scoreTone(score) {
+    function scoreTone(summary) {
+      if (summary.score === null || summary.score === undefined) return summary.score_status === "insufficient_coverage" ? "score-warning" : "score-neutral";
+      const score = summary.score;
       if (score >= 85) return "score-healthy";
       if (score >= 60) return "score-warning";
       return "score-danger";
+    }
+
+    function renderCoverageBanner(summary) {
+      if (!summary) {
+        coverageBanner.classList.add("hidden");
+        return;
+      }
+      const languages = summary.language_coverage || [];
+      const unsupported = languages.filter(item => item.support_level === "unsupported" && item.discovered_files > 0);
+      const failed = languages.filter(item => item.failed_files > 0);
+      const unrecognized = summary.unrecognized_extensions || {};
+      const complete = summary.coverage_status === "complete";
+      const fullyHealthyContext = complete && summary.ai_status === "complete" && ["scored", "scoped"].includes(summary.score_status);
+      coverageBanner.classList.toggle("hidden", fullyHealthyContext);
+      coverageBanner.classList.toggle("complete", fullyHealthyContext);
+      if (unsupported.length || Object.keys(unrecognized).length) {
+        const details = unsupported.map(item => `${item.label} ${item.discovered_files} 个文件`);
+        Object.entries(unrecognized).forEach(([extension, count]) => details.push(`未知扩展 ${extension} ${count} 个文件`));
+        const detail = details.join("、");
+        const insightApis = [...new Set((state.report?.language_insights || []).flatMap(item => item.logging_apis || []))].slice(0, 6);
+        const insightText = insightApis.length ? ` AI 抽样发现日志接口：${insightApis.map(esc).join("、")}；这些线索不计入覆盖率。` : "";
+        coverageBanner.innerHTML = `<strong>分析覆盖不足</strong>：${esc(detail)}暂不支持，当前评分不能代表整个仓库。${insightText}`;
+      } else if (failed.length) {
+        coverageBanner.innerHTML = `<strong>部分源码解析失败</strong>：${esc(failed.map(item => `${item.label} ${item.failed_files} 个`).join("、"))}。`;
+      } else if (summary.ai_status === "partial") {
+        coverageBanner.innerHTML = `<strong>AI 分析未完整完成</strong>：本地规则结果已保留，建议重新分析失败批次。`;
+      } else if (summary.ai_status === "skipped") {
+        coverageBanner.innerHTML = `<strong>当前仅完成本地规则分析</strong>：选择在线运行时可获得语义和缺失日志分析。`;
+      } else if (summary.score_status === "no_log_samples") {
+        coverageBanner.innerHTML = `<strong>未发现日志样本</strong>：结果不会被标记为健康。`;
+      } else {
+        const discovered = summary.discovered_files || summary.files_scanned || 0;
+        coverageBanner.innerHTML = `<strong>源码覆盖完整</strong>：已分析 ${esc(summary.files_scanned)} / ${esc(discovered)} 个源码文件。`;
+      }
     }
 
     function renderResultStream() {
@@ -3400,7 +3501,8 @@ def _html() -> str:
         sensitive_log: "敏感数据",
         duplicate_log: "重复信息",
         missing_exception_log: "异常记录",
-        ai_log_quality: "运行时分析"
+        ai_log_quality: "AI 质量分析",
+        ai_missing_log: "AI 缺失分析"
       })[value] || value;
     }
 
@@ -3418,8 +3520,8 @@ def _html() -> str:
               <h3>${esc(repositoryName(run.repository))}</h3>
               <div class="meta">${esc(formatTime(run.created_at))} · ${esc(run.repository)}</div>
             </div>
-            <div class="history-score"><strong>${esc(run.score)}</strong><span> / 100</span></div>
-            <div class="history-stats">${esc(run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>${esc(run.runtime_id || "规则分析")} · 高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
+            <div class="history-score"><strong>${esc(run.score ?? "N/A")}</strong>${run.score === null || run.score === undefined ? "" : "<span> / 100</span>"}</div>
+            <div class="history-stats">${esc(run.files_scanned)} / ${esc(run.discovered_files || run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>${esc(run.runtime_id || "规则分析")} · 高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
             <button class="secondary" type="button" data-run-id="${esc(run.run_id)}"><span>查看</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
           </div>
         `;

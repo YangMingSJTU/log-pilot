@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from .config import ScanConfig
-from .models import LogCall
-from .parsers import language_for_path, parse_file
+from .languages import known_extensions, language_for_path, language_spec
+from .models import AnalysisTarget, LogCall
+from .parsers import parse_file_with_targets
 
 
 ScanFileProgress = Callable[[int, int, str], None]
@@ -19,6 +21,28 @@ class RepositoryScan:
     logs: list[LogCall]
     files_scanned: int
     language_file_counts: dict[str, int]
+    analysis_targets: list[AnalysisTarget]
+    discovered_language_counts: dict[str, int]
+    failed_language_counts: dict[str, int]
+    selected_language_counts: dict[str, int]
+    parse_failures: list[dict[str, str]]
+    unrecognized_extension_counts: dict[str, int]
+
+    @property
+    def discovered_files(self) -> int:
+        return sum(self.discovered_language_counts.values()) + sum(self.unrecognized_extension_counts.values())
+
+    @property
+    def unsupported_files(self) -> int:
+        return sum(
+            count
+            for language, count in self.discovered_language_counts.items()
+            if not (language_spec(language) and language_spec(language).analyzable)
+        )
+
+    @property
+    def failed_files(self) -> int:
+        return sum(self.failed_language_counts.values())
 
 
 def scan_repository(
@@ -39,34 +63,128 @@ def scan_repository_detailed(
 ) -> RepositoryScan:
     repo_root = repo_root.resolve()
     logs: list[LogCall] = []
+    targets: list[AnalysisTarget] = []
     file_counts: Counter[str] = Counter()
-    source_files = [path for path in _iter_source_files(repo_root, config) if language_for_path(path)]
-    total = len(source_files)
-
-    for index, path in enumerate(source_files, start=1):
-        if should_cancel and should_cancel():
-            raise InterruptedError("分析已取消。")
+    discovered_counts: Counter[str] = Counter()
+    failed_counts: Counter[str] = Counter()
+    selected_counts: Counter[str] = Counter()
+    parse_failures: list[dict[str, str]] = []
+    unrecognized_counts: Counter[str] = Counter()
+    inventory_files = list(_iter_repository_files(repo_root, config))
+    selected_extensions = set(config.include_extensions)
+    source_files: list[tuple[Path, str]] = []
+    for path in inventory_files:
         language = language_for_path(path)
         if not language:
+            if _looks_like_unknown_source(path):
+                extension = path.suffix.lower() or "<no-extension>"
+                unrecognized_counts[extension] += 1
+                if unrecognized_counts[extension] <= 3:
+                    targets.append(_unsupported_sample_target(path, repo_root, "unknown", extension))
             continue
-        file_counts[language] += 1
-        logs.extend(parse_file(path, repo_root, language))
+        discovered_counts[language] += 1
+        spec = language_spec(language)
+        if spec and not spec.analyzable and discovered_counts[language] <= 3:
+            targets.append(_unsupported_sample_target(path, repo_root, language, path.suffix.lower()))
+        if path.suffix.lower() not in selected_extensions:
+            continue
+        selected_counts[language] += 1
+        if spec and spec.analyzable:
+            source_files.append((path, language))
+    total = len(source_files)
+
+    for index, (path, language) in enumerate(source_files, start=1):
+        if should_cancel and should_cancel():
+            raise InterruptedError("分析已取消。")
+        try:
+            parsed_logs, parsed_targets = parse_file_with_targets(path, repo_root, language)
+        except Exception as exc:
+            failed_counts[language] += 1
+            parse_failures.append(
+                {
+                    "file_path": path.relative_to(repo_root).as_posix(),
+                    "language": language,
+                    "error": str(exc),
+                }
+            )
+        else:
+            file_counts[language] += 1
+            logs.extend(parsed_logs)
+            targets.extend(parsed_targets)
         if progress:
             progress(index, total, path.relative_to(repo_root).as_posix())
 
-    return RepositoryScan(logs, total, dict(file_counts))
+    return RepositoryScan(
+        logs=logs,
+        files_scanned=sum(file_counts.values()),
+        language_file_counts=dict(file_counts),
+        analysis_targets=targets,
+        discovered_language_counts=dict(discovered_counts),
+        failed_language_counts=dict(failed_counts),
+        selected_language_counts=dict(selected_counts),
+        parse_failures=parse_failures,
+        unrecognized_extension_counts=dict(unrecognized_counts),
+    )
 
 
-def _iter_source_files(repo_root: Path, config: ScanConfig):
+def _iter_repository_files(repo_root: Path, config: ScanConfig):
     excluded = set(config.exclude)
-    extensions = set(config.include_extensions)
     for current_root, directories, filenames in os.walk(repo_root):
         current = Path(current_root)
         directories[:] = sorted(directory for directory in directories if directory not in excluded)
         for filename in sorted(filenames):
             path = current / filename
-            if path.suffix.lower() not in extensions:
-                continue
             parts = set(path.relative_to(repo_root).parts)
             if not excluded.intersection(parts):
                 yield path
+
+
+_NON_SOURCE_EXTENSIONS = {
+    ".bmp", ".csv", ".gif", ".ico", ".ini", ".jpeg", ".jpg", ".json", ".lock",
+    ".md", ".pdf", ".png", ".qrc", ".rst", ".svg", ".toml", ".tsv", ".txt",
+    ".ui", ".webp", ".xml", ".yaml", ".yml",
+}
+_CODE_HINT = re.compile(
+    r"(?:^|\n)\s*(?:class|def|fn|func|function|import|package|pub|struct|using)\b|"
+    r"#include\s*[<\"]|(?:\{|\}|;)\s*(?:\n|$)",
+    re.MULTILINE,
+)
+
+
+def _looks_like_unknown_source(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if not suffix or suffix in _NON_SOURCE_EXTENSIONS or suffix in known_extensions():
+        return False
+    try:
+        sample = path.read_bytes()[:16_384]
+    except OSError:
+        return False
+    if not sample or b"\0" in sample:
+        return False
+    text = sample.decode("utf-8", errors="ignore")
+    return bool(_CODE_HINT.search(text))
+
+
+def _unsupported_sample_target(
+    path: Path,
+    repo_root: Path,
+    language: str,
+    extension: str,
+) -> AnalysisTarget:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:6000]
+    except OSError:
+        text = ""
+    rel = path.relative_to(repo_root).as_posix()
+    return AnalysisTarget(
+        id=f"unsupported:{language}:{rel}",
+        kind="unsupported_sample",
+        file_path=rel,
+        start_line=1,
+        end_line=min(80, max(1, text.count("\n") + 1)),
+        language=language,
+        context=text,
+        source_line=text,
+        symbol=extension,
+        metadata={"extension": extension},
+    )

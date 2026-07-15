@@ -9,26 +9,31 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config import DEFAULT_EXCLUDES
+from .languages import LANGUAGE_BY_SUFFIX, LANGUAGE_SPECS, LANGUAGES_BY_ID
 from .models import LogCall
-from .parsers import LANGUAGE_BY_SUFFIX
 from .storage import initialize_repository_storage, repository_data_dir
 
 
-LANGUAGE_LABELS = {
-    "python": "Python",
-    "java": "Java",
-    "javascript": "JavaScript",
-    "typescript": "TypeScript",
-}
+LANGUAGE_LABELS = {spec.id: spec.label for spec in LANGUAGE_SPECS}
 LANGUAGE_EXTENSIONS = {
     language: sorted(suffix for suffix, mapped in LANGUAGE_BY_SUFFIX.items() if mapped == language)
     for language in LANGUAGE_LABELS
 }
 BUILTIN_TEMPLATES = {
     "python": '{logger}.exception("{event}")',
+    "c": 'fprintf(stderr, "{event}: %s\\n", {exception})',
+    "cpp": 'LOG(ERROR) << "{event}: " << {exception}',
     "java": '{logger}.error("{event}", {exception})',
     "javascript": '{logger}.error("{event}", {exception})',
     "typescript": '{logger}.error("{event}", {exception})',
+    "go": '{logger}.Error("{event}", "error", {exception})',
+    "rust": 'tracing::error!(error = ?{exception}, "{event}")',
+    "csharp": '{logger}.LogError({exception}, "{event}")',
+    "kotlin": '{logger}.error("{event}", {exception})',
+    "swift": '{logger}.error("{event}: \\({exception})")',
+    "php": '{logger}->error("{event}", ["exception" => {exception}])',
+    "ruby": '{logger}.error("{event}: #{exception}")',
+    "dart": '{logger}.severe("{event}", {exception})',
 }
 ALLOWED_PLACEHOLDERS = {"event", "exception", "function", "logger", "indent"}
 
@@ -42,6 +47,7 @@ class RepositorySettings:
     template_presets: list[dict[str, Any]] = field(default_factory=list)
     active_language_preset: str = "auto"
     active_template_preset: str = "auto"
+    analysis_depth: str = "standard"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,6 +116,9 @@ def normalize_settings(payload: dict[str, Any]) -> RepositorySettings:
         payload.get("active_template_preset", "auto"),
         template_presets,
     )
+    analysis_depth = str(payload.get("analysis_depth", "standard")).strip().lower()
+    if analysis_depth not in {"quick", "standard", "deep"}:
+        analysis_depth = "standard"
     return RepositorySettings(
         language_mode=mode,
         selected_languages=selected,
@@ -118,6 +127,7 @@ def normalize_settings(payload: dict[str, Any]) -> RepositorySettings:
         template_presets=template_presets,
         active_language_preset=active_language_preset,
         active_template_preset=active_template_preset,
+        analysis_depth=analysis_depth,
     )
 
 
@@ -236,6 +246,7 @@ def build_language_profile(
     logs: list[LogCall],
     excludes: list[str] | None = None,
     file_counts: Mapping[str, int] | None = None,
+    unrecognized_extensions: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     excluded = set(excludes or DEFAULT_EXCLUDES)
     counts: Counter[str] = Counter(file_counts or {})
@@ -257,7 +268,8 @@ def build_language_profile(
             "file_count": counts[language],
             "log_count": log_counts[language],
             "recommended": counts[language] > 0,
-            "automatic_fix": language == "python",
+            "automatic_fix": LANGUAGES_BY_ID[language].automatic_fix,
+            "support_level": LANGUAGES_BY_ID[language].support_level,
         }
         for language, label in LANGUAGE_LABELS.items()
     ]
@@ -268,6 +280,7 @@ def build_language_profile(
     profile = {
         "detected_languages": detected,
         "template_recommendations": recommendations,
+        "unrecognized_extensions": dict(unrecognized_extensions or {}),
     }
     data_dir = initialize_repository_storage(repo_root)
     (data_dir / "language-profile.json").write_text(
@@ -280,12 +293,12 @@ def build_language_profile(
 def load_language_profile(repo_root: Path) -> dict[str, Any]:
     path = repository_data_dir(repo_root) / "language-profile.json"
     if not path.is_file():
-        return {"detected_languages": [], "template_recommendations": {}}
+        return {"detected_languages": [], "template_recommendations": {}, "unrecognized_extensions": {}}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"detected_languages": [], "template_recommendations": {}}
-    return payload if isinstance(payload, dict) else {"detected_languages": [], "template_recommendations": {}}
+        return {"detected_languages": [], "template_recommendations": {}, "unrecognized_extensions": {}}
+    return payload if isinstance(payload, dict) else {"detected_languages": [], "template_recommendations": {}, "unrecognized_extensions": {}}
 
 
 def settings_payload(repo_root: Path) -> dict[str, Any]:
@@ -297,7 +310,9 @@ def settings_payload(repo_root: Path) -> dict[str, Any]:
                 "id": language,
                 "label": label,
                 "builtin_template": BUILTIN_TEMPLATES[language],
-                "automatic_fix": language == "python",
+                "automatic_fix": LANGUAGES_BY_ID[language].automatic_fix,
+                "support_level": LANGUAGES_BY_ID[language].support_level,
+                "extensions": list(LANGUAGES_BY_ID[language].extensions),
             }
             for language, label in LANGUAGE_LABELS.items()
         ],

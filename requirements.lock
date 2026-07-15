@@ -1,3 +1,4 @@
-# Direct runtime dependencies for the initial MVP.
-# The implementation intentionally uses Python standard library modules only,
-# so it runs reliably on the local Python 3.14 environment.
+# Runtime dependencies validated with the local Python 3.14 environment.
+tree-sitter==0.26.0
+tree-sitter-c==0.24.2
+tree-sitter-cpp==0.23.4

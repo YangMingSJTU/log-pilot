@@ -20,11 +20,11 @@ Run `git diff --check` before submitting changes. Runtime dependencies are track
 
 ## Coding Style & Naming Conventions
 
-Use 4-space indentation for Python and keep modules focused around one responsibility: scanning, parsing, rules, runtime execution, AI, reporting, patching, CLI, or Web UI. Prefer dataclasses and explicit type hints for shared data structures. Keep Markdown headings sentence-case and use fenced code blocks with language labels.
+Use 4-space indentation for Python and keep modules focused around one responsibility: language registration, scanning, parsing, rules, runtime execution, AI, reporting, patching, CLI, or Web UI. Prefer dataclasses and explicit type hints for shared data structures. Register extensions and support levels in `src/logpilot/languages.py`; do not duplicate suffix maps. Keep Markdown headings sentence-case and use fenced code blocks with language labels.
 
 ## Testing Guidelines
 
-Tests use Python `unittest` and should be added under `tests/` with names such as `test_pipeline.py` or `test_remediation.py`. Cover parser behavior, rule findings, user-data storage, report generation, exact apply validation, atomic rollback, and Web rendering. Set `LOGPILOT_DATA_DIR` to a temporary directory so tests never pollute the real profile.
+Tests use Python `unittest` and should be added under `tests/` with names such as `test_pipeline.py`, `test_language_coverage.py`, or `test_remediation.py`. Cover parser behavior, unsupported-language coverage, AI degradation, user-data storage, report generation, exact apply validation, atomic rollback, and Web rendering. Set `LOGPILOT_DATA_DIR` to a temporary directory so tests never pollute the real profile.
 
 ## Commit & Pull Request Guidelines
 

@@ -291,6 +291,8 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('id="templateInput"', html)
         self.assertIn('id="settingsLanguagePreset"', html)
         self.assertIn('id="settingsTemplatePreset"', html)
+        self.assertIn('id="analysisDepth"', html)
+        self.assertIn("AI 分析深度", html)
         self.assertIn('id="saveLanguagePreset"', html)
         self.assertIn('id="saveTemplatePreset"', html)
         self.assertIn('id="presetDialog"', html)
@@ -540,6 +542,7 @@ class PipelineTests(unittest.TestCase):
                                 ],
                                 "active_language_preset": "backend-languages",
                                 "active_template_preset": "service-templates",
+                                "analysis_depth": "deep",
                             },
                         }
                     ).encode("utf-8"),
@@ -555,6 +558,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(saved["settings"]["template_presets"][0]["name"], "服务模板")
                 self.assertEqual(saved["settings"]["active_language_preset"], "backend-languages")
                 self.assertEqual(saved["settings"]["active_template_preset"], "service-templates")
+                self.assertEqual(saved["settings"]["analysis_depth"], "deep")
                 self.assertTrue((repository_data_dir(repo) / "settings.json").is_file())
                 self.assertTrue((repository_data_dir(repo) / "language-profile.json").is_file())
                 self.assertFalse((repo / ".logpilot").exists())

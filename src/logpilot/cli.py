@@ -64,7 +64,9 @@ def _scan(args) -> None:
     repo_root = Path(args.path).expanduser().resolve()
     config_path = Path(args.config) if args.config else None
     report = run_scan(repo_root, config_path=config_path, runtime_id=args.runtime)
-    print(f"Score: {report.summary.score}/100")
+    score = f"{report.summary.score}/100" if report.summary.score is not None else f"N/A ({report.summary.score_status})"
+    print(f"Score: {score}")
+    print(f"Coverage: {report.summary.files_scanned}/{report.summary.discovered_files} ({report.summary.coverage_ratio:.1%})")
     print(f"Logs: {report.summary.log_count}")
     print(f"Issues: {report.summary.issue_count}")
     print(f"Artifacts: {repository_data_dir(repo_root)}")
@@ -77,7 +79,9 @@ def _report(args) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     summary = data["summary"]
     print(f"Repository: {summary['repository']}")
-    print(f"Score: {summary['score']}/100")
+    score = f"{summary['score']}/100" if summary.get("score") is not None else f"N/A ({summary.get('score_status', 'not_scored')})"
+    print(f"Score: {score}")
+    print(f"Coverage: {summary.get('files_scanned', 0)}/{summary.get('discovered_files', summary.get('files_scanned', 0))}")
     print(f"Logs: {summary['log_count']}")
     print(f"Issues: {summary['issue_count']}")
 

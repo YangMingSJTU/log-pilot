@@ -1,6 +1,6 @@
 # LogPilot
 
-LogPilot is a local log-quality scanner for source repositories. It identifies noisy logs, forbidden log APIs, missing exception logs, and possible sensitive data exposure, then writes review artifacts for humans to inspect.
+LogPilot is a local log-quality scanner for source repositories. It inventories source-language coverage, identifies noisy logs, forbidden log APIs, missing exception logs, and possible sensitive data exposure, then writes review artifacts for humans to inspect.
 
 ## Quick start
 
@@ -19,7 +19,7 @@ logpilot apply . --run latest
 logpilot rollback .
 ```
 
-The workbench detects local Codex and Claude CLI runtimes, shows their health and versions, and sends each log-analysis batch through the selected runtime. Codex runs in read-only ephemeral mode; Claude runs without tools in plan mode. Override executable discovery with `LOGPILOT_CODEX_PATH` or `LOGPILOT_CLAUDE_PATH`.
+The workbench detects local Codex and Claude CLI runtimes, shows their health and versions, and sends each log-analysis batch through the selected runtime. Codex runs in read-only ephemeral mode; Claude runs without tools in plan mode. AI analysis first discovers custom logging APIs, then reviews recognized logs and exception paths. Successful runtime responses are cached in the user data directory. Override executable discovery with `LOGPILOT_CODEX_PATH` or `LOGPILOT_CLAUDE_PATH`.
 
 The selected repository is not used for generated artifacts. Reports, history, patch previews, and apply backups are stored in the current user's application data directory:
 
@@ -31,7 +31,11 @@ Set `LOGPILOT_DATA_DIR` to override the root directory for tests or isolated env
 
 The workbench groups findings by file in a single vertical result stream. Search and severity filters narrow the stream, high-risk findings open by default, and each expanded item keeps its reason, source context, and exact diff together. Exact deletions, replacements, and insertions can be selected per item or per file and applied as one checked batch.
 
-Repository settings can automatically detect Python, Java, JavaScript, and TypeScript, or restrict scans to a fixed multi-language selection. Log templates are resolved in this order: user-fixed template, repository style recommendation, then the built-in safe template. Python exception handlers can currently receive validated automatic log insertions; other languages remain analysis-only until parser-backed insertion support is added.
+Repository settings can automatically detect the repository languages or restrict scans to a fixed multi-language selection. Python and C/C++ have full parser support; Java, JavaScript, and TypeScript have limited parser support. C/C++ recognition includes Qt logging, glog macros, standard streams, and `printf` calls. Other known or unknown languages are reported as unsupported instead of being silently ignored. AI may inspect small samples to identify likely logging APIs, but these advisory results never count as parser coverage.
+
+Before analysis, choose the AI depth: **Quick** prioritizes high-risk targets, **Standard** covers the main flow with high safety limits, and **Deep** removes AI target-count limits. A report only receives a numeric governance score when coverage and AI analysis are sufficient. Repositories with no log samples, unsupported primary languages, parser failures, or incomplete AI analysis show `N/A` with the reason.
+
+Log templates are resolved in this order: user-fixed template, repository style recommendation, then the built-in safe template. Python exception handlers can currently receive validated automatic log insertions; C/C++ exact deletions are supported, while AI-only missing-log suggestions remain review-only.
 
 Every apply validates the saved source context, stores a backup under `applies/<apply_id>/`, and can roll back the latest unchanged transaction. Repository settings and language profiles are stored beside these artifacts in the user data directory. Text-only AI suggestions remain review-only.
 
@@ -45,4 +49,4 @@ python -m logpilot scan . --runtime codex
 python -m logpilot ui --path .
 ```
 
-The local Web UI exposes repository selection, runtime-backed scanning, history, exact patch apply, and rollback endpoints. The MVP intentionally uses Python standard library modules only so it can run on the current local Python 3.14 environment. Future integrations can add Typer, FastAPI, Pydantic, and Tree-sitter behind the existing CLI, Web, model, and parser boundaries.
+The local Web UI exposes repository selection, runtime-backed scanning, history, exact patch apply, and rollback endpoints. C and C++ parsing uses the pinned Tree-sitter packages in `requirements.lock`; the Web and CLI boundaries remain lightweight Python modules.

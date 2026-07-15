@@ -29,6 +29,31 @@ class LogCall:
 
 
 @dataclass(slots=True)
+class AnalysisTarget:
+    id: str
+    kind: str
+    file_path: str
+    start_line: int
+    end_line: int
+    language: str
+    context: str
+    source_line: str
+    symbol: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class LanguageCoverage:
+    language: str
+    label: str
+    support_level: str
+    discovered_files: int
+    analyzed_files: int
+    failed_files: int
+    log_count: int
+
+
+@dataclass(slots=True)
 class FixProposal:
     id: str
     action: str
@@ -73,16 +98,28 @@ class AiTrace:
     runtime_id: str = ""
     runtime_version: str = ""
     duration_ms: int = 0
+    task: str = "log_quality"
 
 
 @dataclass(slots=True)
 class ScanSummary:
     repository: str
-    score: int
+    score: int | None
     files_scanned: int
     log_count: int
     issue_count: int
     severity_counts: dict[str, int]
+    discovered_files: int = 0
+    unsupported_files: int = 0
+    unrecognized_files: int = 0
+    failed_files: int = 0
+    coverage_ratio: float = 0.0
+    coverage_status: str = "complete"
+    analysis_scope: str = "repository"
+    ai_status: str = "skipped"
+    score_status: str = "scored"
+    language_coverage: list[LanguageCoverage] = field(default_factory=list)
+    unrecognized_extensions: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -91,6 +128,7 @@ class ScanReport:
     logs: list[LogCall] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
     ai_traces: list[AiTrace] = field(default_factory=list)
+    language_insights: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
