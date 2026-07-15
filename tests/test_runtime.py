@@ -128,6 +128,61 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(traces[0].runtime_version, "codex-cli 1.0")
         self.assertEqual(traces[0].duration_ms, 25)
 
+    def test_runtime_analysis_splits_large_log_sets_into_progressive_batches(self) -> None:
+        logs = [
+            LogCall(
+                id=f"service.py:{index}:logger.info",
+                file_path="service.py",
+                line=index,
+                column=0,
+                language="python",
+                level="info",
+                callee="logger.info",
+                message=f"event-{index}",
+                context=f"logger.info('event-{index}')",
+                source_line=f"logger.info('event-{index}')",
+            )
+            for index in range(1, 66)
+        ]
+        runtime = RuntimeInfo("codex", "Codex", "codex", "online", "codex.cmd", "codex-cli 1.0")
+        batch_sizes: list[int] = []
+        progress_events: list[tuple[int, int]] = []
+
+        class Registry:
+            def resolve(self, runtime_id):
+                return runtime
+
+        class Executor:
+            def execute(self, runtime, prompt, *args, **kwargs):
+                batch = json.loads(prompt)["logs"]
+                batch_sizes.append(len(batch))
+                findings = [
+                    {
+                        "log_call_id": item["log_call_id"],
+                        "has_issue": False,
+                        "severity": "low",
+                        "title": "无需调整",
+                        "reason": "无问题",
+                        "suggestion": "保持现状",
+                    }
+                    for item in batch
+                ]
+                return RuntimeExecution("codex", "ok", json.dumps({"findings": findings}), duration_ms=1)
+
+        issues, traces = analyze_with_ai(
+            logs,
+            AiConfig(enabled=True),
+            ROOT,
+            registry=Registry(),
+            executor=Executor(),
+            progress=lambda completed, total, _issues, _traces: progress_events.append((completed, total)),
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(batch_sizes, [30, 30, 5])
+        self.assertEqual(len(traces), 3)
+        self.assertEqual(progress_events, [(1, 3), (2, 3), (3, 3)])
+
     def test_executor_reports_timeout(self) -> None:
         def runner(command, **kwargs):
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])

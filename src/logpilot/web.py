@@ -25,7 +25,8 @@ from .remediation import (
     rollback_apply,
 )
 from .runtime import RuntimeExecutor, RuntimeRegistry
-from .scanner import scan_repository
+from .scanner import scan_repository_detailed
+from .scan_jobs import ScanJob, TERMINAL_SCAN_STATUSES
 from .settings import (
     SettingsError,
     build_language_profile,
@@ -51,6 +52,29 @@ def build_server(
     runtimes = runtime_registry or RuntimeRegistry()
     executor = runtime_executor or RuntimeExecutor()
     browse_lock = threading.Lock()
+    scan_jobs: dict[str, ScanJob] = {}
+    scan_jobs_lock = threading.Lock()
+
+    def execute_scan_job(job: ScanJob, target: Path, runtime) -> None:
+        try:
+            report = run_scan(
+                target,
+                runtime_id=runtime.id,
+                runtime_registry=runtimes,
+                runtime_executor=executor,
+                progress=job.update,
+                should_cancel=job.should_cancel,
+            )
+            state["repo_root"] = target.resolve()
+            state["artifacts"] = repository_data_dir(target)
+            state["runtime_id"] = runtime.id
+            history = list_history_runs(state["artifacts"])
+            run_id = str(history[0].get("run_id", "")) if history else ""
+            job.complete(report, run_id)
+        except InterruptedError:
+            job.cancel()
+        except Exception as exc:
+            job.fail(str(exc))
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -58,7 +82,11 @@ def build_server(
             if parsed.path == "/":
                 self._send("text/html; charset=utf-8", _html())
             elif parsed.path == "/api/state":
-                self._send_json(_state_payload(state))
+                payload = _state_payload(state)
+                with scan_jobs_lock:
+                    active_jobs = [job for job in scan_jobs.values() if not job.is_terminal]
+                payload["active_scan"] = active_jobs[-1].snapshot() if active_jobs else None
+                self._send_json(payload)
             elif parsed.path == "/api/report":
                 self._send_file(state["artifacts"] / "report.json", "application/json; charset=utf-8")
             elif parsed.path == "/api/patch":
@@ -79,13 +107,17 @@ def build_server(
                     self._send_json({"error": f"仓库路径不存在：{target}"}, HTTPStatus.BAD_REQUEST)
                     return
                 self._send_json({"repository": str(target), **settings_payload(target)})
+            elif parsed.path.startswith("/api/scans/"):
+                self._send_scan_job(parsed.path, parsed.query)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path == "/api/scan":
-                self._handle_scan()
+            if parsed.path == "/api/scans":
+                self._handle_scan_start()
+            elif parsed.path.startswith("/api/scans/") and parsed.path.endswith("/cancel"):
+                self._handle_scan_cancel(parsed.path)
             elif parsed.path == "/api/browse":
                 self._handle_browse()
             elif parsed.path == "/api/runtimes/refresh":
@@ -104,7 +136,7 @@ def build_server(
         def log_message(self, format: str, *args) -> None:
             return
 
-        def _handle_scan(self) -> None:
+        def _handle_scan_start(self) -> None:
             try:
                 payload = self._read_json()
                 target = _resolve_repo_path(str(payload.get("path", "")))
@@ -114,29 +146,74 @@ def build_server(
 
                 requested_runtime = str(payload.get("runtime", "auto")).strip() or "auto"
                 selected_runtime = runtimes.resolve(requested_runtime)
-                report = run_scan(
-                    target,
-                    runtime_id=selected_runtime.id,
-                    runtime_registry=runtimes,
-                    runtime_executor=executor,
+                repository = str(target.resolve())
+                with scan_jobs_lock:
+                    active = next(
+                        (
+                            job
+                            for job in scan_jobs.values()
+                            if job.repository == repository and not job.is_terminal
+                        ),
+                        None,
+                    )
+                    if active:
+                        self._send_json(
+                            {"error": "该仓库已有分析任务正在运行。", "job": active.snapshot()},
+                            HTTPStatus.CONFLICT,
+                        )
+                        return
+                    job = ScanJob(repository, selected_runtime.id)
+                    scan_jobs[job.id] = job
+                    completed_jobs = [
+                        item for item in scan_jobs.values() if item.status in TERMINAL_SCAN_STATUSES
+                    ]
+                    for old_job in completed_jobs[:-20]:
+                        scan_jobs.pop(old_job.id, None)
+                worker = threading.Thread(
+                    target=execute_scan_job,
+                    args=(job, target, selected_runtime),
+                    daemon=True,
+                    name=f"logpilot-scan-{job.id[:8]}",
                 )
-                state["repo_root"] = target.resolve()
-                state["artifacts"] = repository_data_dir(target)
-                state["runtime_id"] = selected_runtime.id
-                history = list_history_runs(state["artifacts"])
+                worker.start()
                 self._send_json(
-                    {
-                        "repository": str(target.resolve()),
-                        "report": report.to_dict(),
-                        "history": history,
-                        "run": history[0] if history else None,
-                        "runtime": selected_runtime.to_dict(),
-                    }
+                    {"job": job.snapshot(), "runtime": selected_runtime.to_dict()},
+                    HTTPStatus.ACCEPTED,
                 )
-            except RepositoryBusyError as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
             except Exception as exc:  # Keep the local UI useful during early scanner work.
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _send_scan_job(self, path: str, query: str) -> None:
+            job = self._scan_job(path)
+            if not job:
+                self._send_json({"error": "分析任务不存在或已过期。"}, HTTPStatus.NOT_FOUND)
+                return
+            versions = parse_qs(query).get("report_version", ["-1"])
+            try:
+                known_version = int(versions[0])
+            except ValueError:
+                known_version = -1
+            self._send_json({"job": job.snapshot(known_version)})
+
+        def _handle_scan_cancel(self, path: str) -> None:
+            job = self._scan_job(path, cancel=True)
+            if not job:
+                self._send_json({"error": "分析任务不存在或已过期。"}, HTTPStatus.NOT_FOUND)
+                return
+            if not job.request_cancel():
+                self._send_json({"error": "分析任务已经结束。", "job": job.snapshot()}, HTTPStatus.CONFLICT)
+                return
+            self._send_json({"job": job.snapshot()})
+
+        def _scan_job(self, path: str, cancel: bool = False) -> ScanJob | None:
+            parts = [part for part in path.split("/") if part]
+            expected = 4 if cancel else 3
+            if len(parts) != expected or parts[:2] != ["api", "scans"]:
+                return None
+            if cancel and parts[-1] != "cancel":
+                return None
+            with scan_jobs_lock:
+                return scan_jobs.get(parts[2])
 
         def _handle_apply(self) -> None:
             try:
@@ -231,8 +308,13 @@ def build_server(
                 with repository_operation_lock(target):
                     config = load_config(target)
                     config.scan.include_extensions = sorted(LANGUAGE_BY_SUFFIX)
-                    logs, _files_scanned = scan_repository(target, config.scan)
-                    build_language_profile(target, logs, config.scan.exclude)
+                    scan = scan_repository_detailed(target, config.scan)
+                    build_language_profile(
+                        target,
+                        scan.logs,
+                        config.scan.exclude,
+                        scan.language_file_counts,
+                    )
                 self._send_json({"repository": str(target), **settings_payload(target)})
             except RepositoryBusyError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
@@ -590,6 +672,85 @@ def _html() -> str:
       font-size: 10px;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .scan-progress {
+      margin-bottom: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .scan-progress-header {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 11px 14px 10px 18px;
+    }
+    .scan-progress-copy { min-width: 0; }
+    .scan-progress-title { display: flex; align-items: center; gap: 9px; }
+    .scan-progress-title strong { font-size: 13px; }
+    .scan-progress-title span { color: var(--accent-text); font-size: 11px; font-weight: 700; }
+    .scan-progress-message {
+      margin-top: 5px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .scan-progress-track { height: 3px; background: #242428; overflow: hidden; }
+    .scan-progress-track i {
+      display: block;
+      width: var(--progress, 0%);
+      height: 100%;
+      background: var(--accent);
+      transition: width .24s ease;
+    }
+    .scan-progress-track.indeterminate i {
+      width: 28%;
+      animation: progress-pulse 1.2s ease-in-out infinite;
+    }
+    .scan-progress.failed .scan-progress-title span { color: var(--red); }
+    .scan-progress.failed .scan-progress-track i { background: var(--red); }
+    .scan-progress.completed .scan-progress-title span { color: var(--green); }
+    .scan-progress.completed .scan-progress-track i { background: var(--green); }
+    .scan-steps {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-top: 1px solid var(--line-soft);
+      background: #0f0f11;
+    }
+    .scan-step {
+      min-width: 0;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 13px;
+      border-right: 1px solid var(--line-soft);
+      color: var(--subtle);
+      font-size: 10px;
+    }
+    .scan-step:last-child { border-right: 0; }
+    .scan-step::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border: 1px solid #55555e;
+      border-radius: 50%;
+      background: transparent;
+    }
+    .scan-step.active { color: var(--ink); }
+    .scan-step.active::before { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .scan-step.done { color: var(--muted); }
+    .scan-step.done::before { border-color: var(--green); background: var(--green); }
+    .incremental-note {
+      margin: -10px 0 18px;
+      color: var(--muted);
+      font-size: 10px;
     }
     .preset-control {
       min-width: 0;
@@ -1337,6 +1498,10 @@ def _html() -> str:
       to { opacity: 1; transform: translateY(0); }
     }
     @keyframes toast-out { to { opacity: 0; transform: translateY(-6px); } }
+    @keyframes progress-pulse {
+      from { transform: translateX(-110%); }
+      to { transform: translateX(360%); }
+    }
 
     @media (max-width: 1080px) {
       .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
@@ -1370,6 +1535,7 @@ def _html() -> str:
       .analysis-option { grid-template-columns: auto minmax(150px, 220px) minmax(0, 1fr); }
       .analysis-option:first-child { border-right: 0; border-bottom: 1px solid var(--line); }
       .analysis-option-summary { grid-column: auto; }
+      .scan-step { padding: 0 9px; }
       .summary-grid { grid-template-columns: minmax(160px, 1.2fr) repeat(3, minmax(92px, 1fr)); }
       .metric:nth-child(4) { border-right: 0; }
       .risk-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); }
@@ -1407,6 +1573,10 @@ def _html() -> str:
       #scanButton { width: 100%; }
       .analysis-option { grid-template-columns: 1fr; gap: 7px; }
       .analysis-option-summary { grid-column: auto; }
+      .scan-progress-header { align-items: flex-start; }
+      .scan-progress-message { white-space: normal; }
+      .scan-steps { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+      .scan-step { justify-content: center; gap: 5px; padding: 0 2px; font-size: 9px; white-space: nowrap; }
       .preset-library { grid-template-columns: 1fr auto auto auto; }
       .preset-library-label { grid-column: 1 / -1; }
       .summary-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
@@ -1480,6 +1650,24 @@ def _html() -> str:
             </div>
           </div>
         </section>
+        <section class="scan-progress hidden" id="scanProgress" aria-live="polite">
+          <div class="scan-progress-header">
+            <div class="scan-progress-copy">
+              <div class="scan-progress-title"><strong id="scanProgressTitle">正在准备分析</strong><span id="scanProgressPercent">0%</span></div>
+              <div class="scan-progress-message" id="scanProgressMessage">正在创建后台分析任务</div>
+            </div>
+            <button class="secondary compact-action" id="cancelScanButton" type="button">停止分析</button>
+          </div>
+          <div class="scan-progress-track indeterminate" id="scanProgressTrack"><i></i></div>
+          <div class="scan-steps" id="scanSteps">
+            <span class="scan-step" data-scan-step="discovering">发现文件</span>
+            <span class="scan-step" data-scan-step="parsing">解析源码</span>
+            <span class="scan-step" data-scan-step="rules">规则检查</span>
+            <span class="scan-step" data-scan-step="runtime">运行时分析</span>
+            <span class="scan-step" data-scan-step="reporting">生成报告</span>
+          </div>
+        </section>
+        <div class="incremental-note hidden" id="incrementalNote">分析仍在进行，当前展示已完成阶段的结果；完成后才可采纳修改。</div>
         <div class="snapshot-banner hidden" id="snapshotBanner">
           <div class="snapshot-copy"><span class="state-dot warning-dot"></span><span>源码已修改，当前结果为分析快照</span></div>
           <div class="snapshot-actions"><button class="secondary" id="rollbackButton" type="button">撤销上次采纳</button><button class="secondary" id="rescanButton" type="button">重新分析</button></div>
@@ -1603,9 +1791,13 @@ def _html() -> str:
     const state = {
       path: "",
       scanning: false,
+      scanJobId: "",
+      scanReportVersion: -1,
+      scanCancelRequested: false,
       browsing: false,
       history: [],
       report: null,
+      reportActionable: false,
       patch: "",
       activeRunId: "",
       selectedGroups: new Set(),
@@ -1641,6 +1833,14 @@ def _html() -> str:
     const repoPath = document.querySelector("#repoPath");
     const browseButton = document.querySelector("#browseButton");
     const scanButton = document.querySelector("#scanButton");
+    const scanProgress = document.querySelector("#scanProgress");
+    const scanProgressTitle = document.querySelector("#scanProgressTitle");
+    const scanProgressPercent = document.querySelector("#scanProgressPercent");
+    const scanProgressMessage = document.querySelector("#scanProgressMessage");
+    const scanProgressTrack = document.querySelector("#scanProgressTrack");
+    const scanSteps = document.querySelector("#scanSteps");
+    const cancelScanButton = document.querySelector("#cancelScanButton");
+    const incrementalNote = document.querySelector("#incrementalNote");
     const toastRegion = document.querySelector("#toastRegion");
     const currentTab = document.querySelector("#currentTab");
     const historyTab = document.querySelector("#historyTab");
@@ -1709,6 +1909,7 @@ def _html() -> str:
     const confirmPresetButton = document.querySelector("#confirmPresetButton");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
+    cancelScanButton.addEventListener("click", cancelScan);
     browseButton.addEventListener("click", browseRepository);
     repoPath.addEventListener("keydown", event => {
       if (event.key === "Enter") startScan(repoPath.value);
@@ -1840,14 +2041,18 @@ def _html() -> str:
         const [stateResponse] = await Promise.all([fetch("/api/state"), loadRuntimes(false)]);
         const payload = await stateResponse.json();
         if (!stateResponse.ok || payload.error) throw new Error(payload.error || "状态读取失败");
-        state.path = payload.repository || "";
+        const activeScan = payload.active_scan || null;
+        state.path = activeScan?.repository || payload.repository || "";
         state.history = payload.history || [];
         state.activeRunId = state.history[0]?.run_id || "";
         repoPath.value = state.path;
         updateRepositoryIdentity(state.path);
         await loadRepositorySettings(state.path, true);
         renderHistory(state.history);
-        if (payload.has_report) await loadReport();
+        if (activeScan) {
+          renderEmpty();
+          await resumeScan(activeScan);
+        } else if (payload.has_report) await loadReport();
         else renderEmpty();
       } catch (error) {
         showToast(`初始化失败：${error.message}`, "error");
@@ -2017,39 +2222,203 @@ def _html() -> str:
         return;
       }
       if (!await persistRepositorySettings(true)) return;
+      resetReportForScan();
       setScanning(true);
-      showToast(`正在通过 ${runtime.name} 分析仓库...`, "info", 0);
+      showToast(`已通过 ${runtime.name} 启动后台分析`, "info");
       try {
-        const response = await fetch("/api/scan", {
+        const response = await fetch("/api/scans", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: target, runtime: runtime.id })
         });
         const payload = await response.json();
-        if (!response.ok || payload.error) throw new Error(payload.error || "扫描失败");
-        state.path = payload.repository;
-        state.history = payload.history || [];
-        repoPath.value = state.path;
-        updateRepositoryIdentity(state.path);
-        renderReport(payload.report);
-        renderHistory(state.history);
-        state.activeRunId = payload.run?.run_id || state.history[0]?.run_id || "";
-        await loadPatch();
-        await loadApplies();
-        await loadRepositorySettings(state.path, true);
-        showTab("current");
-        showToast(`${runtime.name} 分析完成，结果已更新`, "success");
+        if (!response.ok && !(response.status === 409 && payload.job)) {
+          throw new Error(payload.error || "分析任务创建失败");
+        }
+        const job = payload.job;
+        if (!job?.job_id) throw new Error("分析任务缺少任务标识");
+        state.scanJobId = job.job_id;
+        state.scanReportVersion = -1;
+        renderScanProgress(job);
+        if (response.status === 409) showToast("已恢复该仓库正在执行的分析任务", "info");
+        await pollScanJob(runtime);
       } catch (error) {
         showToast(`分析失败：${error.message}`, "error");
-      } finally {
         setScanning(false);
+        markScanProgressFailed(error.message);
       }
+    }
+
+    async function resumeScan(job) {
+      const runtime = state.runtimes.find(item => item.id === job.runtime_id) || selectedRuntime();
+      if (!runtime) {
+        showToast("检测到未完成分析，但对应运行时当前不可用", "warning");
+        return;
+      }
+      state.selectedRuntime = runtime.id;
+      renderRuntimes();
+      resetReportForScan();
+      state.scanJobId = job.job_id;
+      state.scanReportVersion = -1;
+      setScanning(true);
+      if (job.partial_report) {
+        state.scanReportVersion = job.report_version;
+        renderReport(job.partial_report, true);
+      }
+      renderScanProgress(job);
+      showTab("current");
+      showToast("已恢复正在进行的分析任务", "info");
+      try {
+        await pollScanJob(runtime);
+      } catch (error) {
+        setScanning(false);
+        markScanProgressFailed(error.message);
+        showToast(`分析失败：${error.message}`, "error");
+      }
+    }
+
+    async function pollScanJob(runtime) {
+      while (state.scanning && state.scanJobId) {
+        const response = await fetch(
+          `/api/scans/${encodeURIComponent(state.scanJobId)}?report_version=${state.scanReportVersion}`
+        );
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "分析状态读取失败");
+        const job = payload.job;
+        renderScanProgress(job);
+        if (job.partial_report) {
+          state.scanReportVersion = job.report_version;
+          renderReport(job.partial_report, true);
+        }
+        if (job.status === "completed") {
+          await completeScan(job, runtime);
+          return;
+        }
+        if (job.status === "failed") throw new Error(job.error || "后台分析失败");
+        if (job.status === "cancelled") {
+          setScanning(false);
+          incrementalNote.classList.add("hidden");
+          showToast("分析已取消，部分结果没有写入历史记录", "warning");
+          return;
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 650));
+      }
+    }
+
+    async function completeScan(job, runtime) {
+      state.path = job.repository;
+      repoPath.value = state.path;
+      updateRepositoryIdentity(state.path);
+      const historyResponse = await fetch("/api/history");
+      const historyPayload = await historyResponse.json();
+      if (!historyResponse.ok || historyPayload.error) throw new Error(historyPayload.error || "历史记录刷新失败");
+      state.history = historyPayload.runs || [];
+      state.activeRunId = job.run_id || state.history[0]?.run_id || "";
+      renderHistory(state.history);
+      await loadReport();
+      await loadRepositorySettings(state.path, true);
+      showTab("current");
+      setScanning(false);
+      renderScanProgress(job);
+      incrementalNote.classList.add("hidden");
+      showToast(`${runtime.name} 分析完成，结果已更新`, "success");
+      window.setTimeout(() => {
+        if (!state.scanning) scanProgress.classList.add("hidden");
+      }, 1800);
+    }
+
+    async function cancelScan() {
+      if (!state.scanning || !state.scanJobId || state.scanCancelRequested) return;
+      state.scanCancelRequested = true;
+      cancelScanButton.disabled = true;
+      cancelScanButton.textContent = "正在停止...";
+      try {
+        const response = await fetch(`/api/scans/${encodeURIComponent(state.scanJobId)}/cancel`, {
+          method: "POST"
+        });
+        const payload = await response.json();
+        if (!response.ok && response.status !== 409) throw new Error(payload.error || "停止失败");
+        if (payload.job) renderScanProgress(payload.job);
+      } catch (error) {
+        state.scanCancelRequested = false;
+        cancelScanButton.disabled = false;
+        cancelScanButton.textContent = "停止分析";
+        showToast(`停止失败：${error.message}`, "error");
+      }
+    }
+
+    function resetReportForScan() {
+      state.report = null;
+      state.reportActionable = false;
+      state.patch = "";
+      state.activeRunId = "";
+      state.scanJobId = "";
+      state.scanReportVersion = -1;
+      state.scanCancelRequested = false;
+      state.selectedGroups = new Set();
+      state.expandedGroups = new Set();
+      state.collapsedFiles = new Set();
+      state.searchQuery = "";
+      state.severityFilter = "all";
+      state.appliedIssueIds = new Set();
+      state.applyRecords = [];
+      resultSearch.value = "";
+      document.querySelector("#metrics").innerHTML = summaryMarkup(null);
+      resultsSummary.textContent = "正在准备分析";
+      resultStream.innerHTML = '<div class="results-empty">本地规则完成后将在这里显示第一批结果</div>';
+      fullPatchButton.disabled = true;
+      expandAllButton.disabled = true;
+      collapseAllButton.disabled = true;
+      batchBar.classList.add("hidden");
+      snapshotBanner.classList.add("hidden");
+      scanProgress.classList.remove("hidden", "failed", "completed");
+      incrementalNote.classList.add("hidden");
+      renderScanProgress({ status: "queued", stage: "queued", percent: 0, message: "正在创建后台分析任务", completed: 0, total: 0 });
+    }
+
+    function renderScanProgress(job) {
+      const stageIndexes = { queued: 0, preparing: 0, discovering: 0, parsing: 1, rules: 2, runtime: 3, fixes: 4, reporting: 4, complete: 5 };
+      const titles = {
+        queued: "等待开始",
+        preparing: "准备分析",
+        discovering: "发现源码文件",
+        parsing: "解析源码",
+        rules: "执行本地规则",
+        runtime: "运行时分析",
+        fixes: "生成修改建议",
+        reporting: "保存分析报告",
+        complete: "分析完成"
+      };
+      const terminal = ["completed", "failed", "cancelled"].includes(job.status);
+      const currentIndex = stageIndexes[job.stage] ?? 0;
+      const percent = Number(job.percent || 0);
+      scanProgress.classList.remove("hidden");
+      scanProgress.classList.toggle("failed", job.status === "failed");
+      scanProgress.classList.toggle("completed", job.status === "completed");
+      scanProgressTitle.textContent = job.status === "failed" ? "分析失败" : job.status === "cancelled" ? "分析已取消" : titles[job.stage] || "正在分析";
+      scanProgressPercent.textContent = `${percent}%`;
+      scanProgressMessage.textContent = job.message || "正在处理";
+      scanProgressTrack.style.setProperty("--progress", `${percent}%`);
+      scanProgressTrack.classList.toggle("indeterminate", !terminal && Number(job.total || 0) === 0);
+      scanSteps.querySelectorAll("[data-scan-step]").forEach((step, index) => {
+        step.classList.toggle("done", job.status === "completed" || index < currentIndex);
+        step.classList.toggle("active", !terminal && index === currentIndex);
+      });
+      cancelScanButton.disabled = terminal || job.status === "cancelling" || state.scanCancelRequested;
+      cancelScanButton.textContent = job.status === "cancelling" || state.scanCancelRequested ? "正在停止..." : "停止分析";
+      incrementalNote.classList.toggle("hidden", !state.scanning || !state.report);
+    }
+
+    function markScanProgressFailed(message) {
+      renderScanProgress({ status: "failed", stage: "failed", percent: 0, message, completed: 0, total: 1 });
+      incrementalNote.classList.toggle("hidden", !state.report);
     }
 
     async function loadReport() {
       const reportResponse = await fetch("/api/report");
       const report = await reportResponse.json();
       if (!reportResponse.ok || report.error) throw new Error(report.error || "报告读取失败");
+      state.reportActionable = true;
       renderReport(report);
       await loadPatch();
       await loadApplies();
@@ -2069,6 +2438,7 @@ def _html() -> str:
         const response = await fetch(`/api/history/run?run_id=${encodeURIComponent(runId)}`);
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "历史记录读取失败");
+        state.reportActionable = true;
         renderReport(payload.report);
         state.activeRunId = runId;
         state.patch = payload.patch || "暂无补丁产物。";
@@ -2119,6 +2489,10 @@ def _html() -> str:
     }
 
     function openApplyDialog(issueIds) {
+      if (!state.reportActionable) {
+        showToast(state.scanning ? "分析完成后才能采纳修改" : "未完成的临时结果不能采纳，请重新分析", "warning");
+        return;
+      }
       const unique = [...new Set(issueIds)].filter(Boolean);
       if (!unique.length || !state.activeRunId) {
         showToast("当前问题没有可安全采纳的修改", "warning");
@@ -2211,6 +2585,11 @@ def _html() -> str:
       scanButton.disabled = value || !selectedRuntime();
       runtimeSelect.disabled = value;
       scanButton.querySelector("span").textContent = value ? "分析中..." : "开始分析";
+      if (!value) {
+        state.scanCancelRequested = false;
+        cancelScanButton.disabled = true;
+      }
+      if (state.report) renderResultStream();
     }
 
     function setBrowsing(value) {
@@ -2580,6 +2959,7 @@ def _html() -> str:
 
     function renderEmpty() {
       state.report = null;
+      state.reportActionable = false;
       state.patch = "";
       state.activeRunId = "";
       state.selectedGroups = new Set();
@@ -2599,23 +2979,35 @@ def _html() -> str:
       batchApplyButton.disabled = true;
       batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
+      scanProgress.classList.add("hidden");
+      incrementalNote.classList.add("hidden");
       updateSeverityFilters();
       renderDiagnostics();
     }
 
-    function renderReport(report) {
+    function renderReport(report, incremental = false) {
+      const previousGroupIds = new Set(issueGroups().map(group => group.id));
       state.report = report;
-      state.patch = "";
-      state.selectedGroups = new Set();
-      state.collapsedFiles = new Set();
-      state.searchQuery = "";
-      state.severityFilter = "all";
-      state.appliedIssueIds = new Set();
-      state.applyRecords = [];
-      resultSearch.value = "";
-      fullPatchButton.disabled = true;
+      if (!incremental) {
+        state.patch = "";
+        state.selectedGroups = new Set();
+        state.collapsedFiles = new Set();
+        state.searchQuery = "";
+        state.severityFilter = "all";
+        state.appliedIssueIds = new Set();
+        state.applyRecords = [];
+        resultSearch.value = "";
+        fullPatchButton.disabled = true;
+      }
       renderMetrics(report.summary);
-      state.expandedGroups = new Set(issueGroups().map(group => group.id));
+      const currentGroups = issueGroups();
+      if (incremental) {
+        currentGroups.forEach(group => {
+          if (!previousGroupIds.has(group.id)) state.expandedGroups.add(group.id);
+        });
+      } else {
+        state.expandedGroups = new Set(currentGroups.map(group => group.id));
+      }
       renderResultStream();
       renderDiagnostics();
     }
@@ -2751,7 +3143,7 @@ def _html() -> str:
     }
 
     function isGroupApplicable(group) {
-      return patchIssueIds(group).length > 0 && !isGroupApplied(group);
+      return state.reportActionable && !state.scanning && patchIssueIds(group).length > 0 && !isGroupApplied(group);
     }
 
     function updateSeverityFilters() {
@@ -2774,7 +3166,9 @@ def _html() -> str:
 
     function fileGroupMarkup(file) {
       const collapsed = state.collapsedFiles.has(file.path);
+      const exact = file.groups.filter(group => patchIssueIds(group).length > 0 && !isGroupApplied(group));
       const applicable = file.groups.filter(isGroupApplicable);
+      const previewOnly = !state.reportActionable && exact.length > 0;
       const allExpanded = file.groups.every(group => state.expandedGroups.has(group.id));
       const anyExpanded = file.groups.some(group => state.expandedGroups.has(group.id));
       return `
@@ -2783,14 +3177,14 @@ def _html() -> str:
             <button class="file-toggle" type="button" data-file-toggle="${esc(file.path)}" aria-expanded="${collapsed ? "false" : "true"}">
               <svg class="icon file-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
               <svg class="icon file-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/></svg>
-              <span><span class="file-path">${esc(file.path)}</span><span class="file-count">${file.groups.length} 个问题位置 · ${applicable.length} 项可采纳</span></span>
+              <span><span class="file-path">${esc(file.path)}</span><span class="file-count">${file.groups.length} 个问题位置 · ${exact.length} 项可采纳</span></span>
             </button>
             <div class="file-header-actions">
               <div class="file-fold-actions" role="group" aria-label="${esc(file.path)} 批量展开与折叠">
                 <button class="secondary icon-only file-fold-button" type="button" data-file-expand-all="${esc(file.path)}" title="展开该文件全部问题" aria-label="展开该文件全部问题" ${allExpanded && !collapsed ? "disabled" : ""}><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 5 5 5-5"/><path d="m7 13 5 5 5-5"/></svg></button>
                 <button class="secondary icon-only file-fold-button" type="button" data-file-collapse-all="${esc(file.path)}" title="折叠该文件全部问题" aria-label="折叠该文件全部问题" ${!anyExpanded ? "disabled" : ""}><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 5-5 5 5"/><path d="m7 11 5-5 5 5"/></svg></button>
               </div>
-              <label class="file-select" title="${applicable.length ? "选择该文件的全部精确修改" : "该文件没有精确修改"}"><input type="checkbox" data-file-check="${esc(file.path)}" ${applicable.length ? "" : "disabled"}>${applicable.length ? "选择可采纳项" : "无精确修改"}</label>
+              <label class="file-select" title="${previewOnly ? state.scanning ? "分析完成后可选择" : "未完成的临时结果仅供预览" : applicable.length ? "选择该文件的全部精确修改" : "该文件没有精确修改"}"><input type="checkbox" data-file-check="${esc(file.path)}" ${applicable.length ? "" : "disabled"}>${previewOnly ? state.scanning ? "等待完成" : "仅预览" : applicable.length ? "选择可采纳项" : "无精确修改"}</label>
             </div>
           </div>
           <div class="file-results">${file.groups.map(resultItemMarkup).join("")}</div>
@@ -2802,6 +3196,9 @@ def _html() -> str:
       const expanded = state.expandedGroups.has(group.id);
       const applied = isGroupApplied(group);
       const applicable = isGroupApplicable(group);
+      const pending = !state.reportActionable && patchIssueIds(group).length > 0 && !applied;
+      const pendingLabel = state.scanning ? "分析完成后可采纳" : "临时结果仅供预览";
+      const pendingStatus = state.scanning ? "分析中" : "仅预览";
       const rules = [...new Set(group.issues.map(item => ruleText(item.kind)).filter(Boolean))];
       const reasons = uniqueText(group.issues.map(item => item.reason));
       const suggestions = uniqueText(group.issues.map(item => item.suggestion));
@@ -2810,10 +3207,10 @@ def _html() -> str:
       return `
         <article class="result-item ${expanded ? "expanded" : ""} ${state.selectedGroups.has(group.id) ? "selected" : ""}">
           <div class="result-item-header">
-            <label class="issue-select" title="${applicable ? "选择此修改" : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
+            <label class="issue-select" title="${applicable ? "选择此修改" : pending ? pendingLabel : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
             <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
             <button class="result-toggle" type="button" data-group-toggle="${esc(group.id)}" aria-expanded="${expanded ? "true" : "false"}">
-              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span>${applied ? '<span class="issue-status">已采纳</span>' : !fix ? '<span class="issue-status muted">仅建议</span>' : ""}</span>
+              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span>${applied ? '<span class="issue-status">已采纳</span>' : pending ? `<span class="issue-status muted">${pendingStatus}</span>` : !fix ? '<span class="issue-status muted">仅建议</span>' : ""}</span>
               <span class="result-rules">第 ${esc(issue.line)} 行 · ${esc(rules.join("、"))} · ${esc(sourceText(issue.source))}</span>
             </button>
             <svg class="icon result-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -2826,7 +3223,7 @@ def _html() -> str:
               </div>
               <div class="inline-block"><div class="inline-block-header"><span>相关代码</span><span>${esc(issue.file_path)}:${esc(issue.line)}</span></div><div class="code-view">${codeContextMarkup(relatedCodeTextFor(group))}</div></div>
               ${fix ? `<div class="inline-block"><div class="inline-block-header"><span>修改预览</span><span>${esc(fixActionText(fix))} · ${esc(fixSourceText(fix.source))}</span></div><div class="diff-view inline-diff">${diffMarkup(fixPreview(fix))}</div></div>` : ""}
-              ${fix ? `<div class="result-footer"><button type="button" data-apply-group="${esc(group.id)}" ${applicable ? "" : "disabled"}>${applied ? "已采纳" : "采纳此修改"}</button></div>` : ""}
+              ${fix ? `<div class="result-footer"><button type="button" data-apply-group="${esc(group.id)}" ${applicable ? "" : "disabled"}>${applied ? "已采纳" : pending ? pendingLabel : "采纳此修改"}</button></div>` : ""}
             </div>` : ""}
         </article>`;
     }

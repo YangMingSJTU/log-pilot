@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import AiConfig
 from .models import AiTrace, Issue, LogCall, Severity
 from .runtime import RuntimeExecutor, RuntimeRegistry
+
+
+AI_BATCH_MAX_LOGS = 30
+AI_BATCH_MAX_CHARS = 60_000
+AiBatchProgress = Callable[[int, int, list[Issue], list[AiTrace]], None]
 
 
 ANALYSIS_SCHEMA: dict[str, Any] = {
@@ -48,6 +53,8 @@ def analyze_with_ai(
     runtime_id: str | None = None,
     registry: RuntimeRegistry | None = None,
     executor: RuntimeExecutor | None = None,
+    progress: AiBatchProgress | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> tuple[list[Issue], list[AiTrace]]:
     if runtime_id is None and not config.enabled:
         return [], []
@@ -56,33 +63,61 @@ def analyze_with_ai(
 
     runtime_registry = registry or RuntimeRegistry()
     runtime = runtime_registry.resolve(runtime_id or config.runtime)
-    prompt = build_prompt(logs)
-    execution = (executor or RuntimeExecutor()).execute(
-        runtime,
-        prompt,
-        repo_root,
-        ANALYSIS_SCHEMA,
-        model=config.model,
-        timeout_seconds=config.timeout_seconds,
-    )
-    trace = AiTrace(
-        log_call_id="runtime-batch",
-        status=execution.status,
-        prompt=prompt,
-        raw_response=execution.raw_response,
-        error=execution.error,
-        runtime_id=runtime.id,
-        runtime_version=runtime.version,
-        duration_ms=execution.duration_ms,
-    )
-    if execution.status != "ok":
-        raise RuntimeError(f"{runtime.name} 运行时分析失败：{execution.error}")
+    batches = _batch_logs(logs)
+    all_issues: list[Issue] = []
+    traces: list[AiTrace] = []
+    runtime_executor = executor or RuntimeExecutor()
+    for index, batch in enumerate(batches, start=1):
+        if should_cancel and should_cancel():
+            raise InterruptedError("分析已取消。")
+        prompt = build_prompt(batch)
+        execution = runtime_executor.execute(
+            runtime,
+            prompt,
+            repo_root,
+            ANALYSIS_SCHEMA,
+            model=config.model,
+            timeout_seconds=config.timeout_seconds,
+        )
+        trace = AiTrace(
+            log_call_id=f"runtime-batch-{index}",
+            status=execution.status,
+            prompt=prompt,
+            raw_response=execution.raw_response,
+            error=execution.error,
+            runtime_id=runtime.id,
+            runtime_version=runtime.version,
+            duration_ms=execution.duration_ms,
+        )
+        traces.append(trace)
+        if execution.status != "ok":
+            raise RuntimeError(f"{runtime.name} 运行时分析失败：{execution.error}")
 
-    issues, parse_error = _issues_from_response(logs, execution.raw_response, runtime.id)
-    if parse_error:
-        trace.status = "parse_error"
-        trace.error = parse_error
-    return issues, [trace]
+        issues, parse_error = _issues_from_response(batch, execution.raw_response, runtime.id)
+        all_issues.extend(issues)
+        if parse_error:
+            trace.status = "parse_error"
+            trace.error = parse_error
+        if progress:
+            progress(index, len(batches), list(all_issues), list(traces))
+    return all_issues, traces
+
+
+def _batch_logs(logs: list[LogCall]) -> list[list[LogCall]]:
+    batches: list[list[LogCall]] = []
+    current: list[LogCall] = []
+    current_chars = 0
+    for log in logs:
+        weight = len(log.context[:1600]) + len(log.message) + len(log.file_path) + 256
+        if current and (len(current) >= AI_BATCH_MAX_LOGS or current_chars + weight > AI_BATCH_MAX_CHARS):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(log)
+        current_chars += weight
+    if current:
+        batches.append(current)
+    return batches
 
 
 def build_prompt(logs: list[LogCall]) -> str:

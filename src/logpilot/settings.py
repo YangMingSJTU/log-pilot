@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import string
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .config import DEFAULT_EXCLUDES
 from .models import LogCall
@@ -234,27 +235,28 @@ def build_language_profile(
     repo_root: Path,
     logs: list[LogCall],
     excludes: list[str] | None = None,
+    file_counts: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     excluded = set(excludes or DEFAULT_EXCLUDES)
-    file_counts: Counter[str] = Counter()
-    for path in repo_root.rglob("*"):
-        if not path.is_file():
-            continue
-        language = LANGUAGE_BY_SUFFIX.get(path.suffix.lower())
-        if not language:
-            continue
-        if excluded.intersection(path.relative_to(repo_root).parts):
-            continue
-        file_counts[language] += 1
+    counts: Counter[str] = Counter(file_counts or {})
+    if file_counts is None:
+        for current_root, directories, filenames in os.walk(repo_root):
+            directories[:] = [directory for directory in directories if directory not in excluded]
+            current = Path(current_root)
+            for filename in filenames:
+                path = current / filename
+                language = LANGUAGE_BY_SUFFIX.get(path.suffix.lower())
+                if language:
+                    counts[language] += 1
 
     log_counts = Counter(log.language for log in logs)
     detected = [
         {
             "id": language,
             "label": label,
-            "file_count": file_counts[language],
+            "file_count": counts[language],
             "log_count": log_counts[language],
-            "recommended": file_counts[language] > 0,
+            "recommended": counts[language] > 0,
             "automatic_fix": language == "python",
         }
         for language, label in LANGUAGE_LABELS.items()

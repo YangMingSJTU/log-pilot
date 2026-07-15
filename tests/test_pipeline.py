@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -62,6 +63,41 @@ class FakeRuntimeExecutor:
             for log in logs
         ]
         return RuntimeExecution("codex", "ok", json.dumps({"findings": findings}, ensure_ascii=False), duration_ms=1)
+
+
+class BlockingRuntimeExecutor(FakeRuntimeExecutor):
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def execute(self, *args, **kwargs):
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("测试运行时等待超时")
+        return super().execute(*args, **kwargs)
+
+
+def _start_scan_job(host: str, port: int, repo: Path) -> tuple[int, dict]:
+    request = urllib.request.Request(
+        f"http://{host}:{port}/api/scans",
+        data=json.dumps({"path": str(repo), "runtime": "codex"}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.status, json.loads(response.read().decode("utf-8"))
+
+
+def _wait_for_scan_job(host: str, port: int, job_id: str, timeout: float = 10) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/scans/{job_id}", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        job = payload["job"]
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return job
+        time.sleep(0.02)
+    raise AssertionError("分析任务未在测试时限内结束")
 
 
 class PipelineTests(unittest.TestCase):
@@ -211,7 +247,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('id="collapseAllButton"', html)
         self.assertIn('data-file-expand-all=', html)
         self.assertIn('data-file-collapse-all=', html)
-        self.assertIn("state.expandedGroups = new Set(issueGroups().map", html)
+        self.assertIn("state.expandedGroups = new Set(currentGroups.map", html)
         self.assertIn("setVisibleGroupsExpanded", html)
         self.assertIn("setFileGroupsExpanded", html)
         self.assertIn('id="batchBar"', html)
@@ -267,7 +303,10 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("analysis-workspace", html)
         self.assertNotIn("sourceTab", html)
         self.assertNotIn("patchTab", html)
-        self.assertIn("/api/scan", html)
+        self.assertIn("/api/scans", html)
+        self.assertIn('id="scanProgress"', html)
+        self.assertIn('id="cancelScanButton"', html)
+        self.assertIn("pollScanJob", html)
         self.assertIn("/api/browse", html)
 
     def test_web_scan_endpoint_runs_pipeline(self) -> None:
@@ -294,26 +333,23 @@ class PipelineTests(unittest.TestCase):
             thread.start()
             try:
                 host, port = server.server_address
-                request = urllib.request.Request(
-                    f"http://{host}:{port}/api/scan",
-                    data=json.dumps({"path": str(repo)}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(request, timeout=10) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(response.status, 200)
-                self.assertEqual(payload["repository"], str(repo.resolve()))
-                self.assertGreaterEqual(payload["report"]["summary"]["log_count"], 1)
-                self.assertEqual(len(payload["history"]), 1)
-                self.assertEqual(payload["history"][0]["runtime_id"], "codex")
+                status, started = _start_scan_job(host, port, repo)
+                self.assertEqual(status, 202)
+                completed = _wait_for_scan_job(host, port, started["job"]["job_id"])
+                self.assertEqual(completed["status"], "completed")
+                self.assertEqual(completed["repository"], str(repo.resolve()))
                 self.assertTrue((repository_data_dir(repo) / "report.json").exists())
                 self.assertFalse((repo / ".logpilot").exists())
+
+                with urllib.request.urlopen(f"http://{host}:{port}/api/report", timeout=10) as report_response:
+                    report_payload = json.loads(report_response.read().decode("utf-8"))
+                self.assertGreaterEqual(report_payload["summary"]["log_count"], 1)
 
                 with urllib.request.urlopen(f"http://{host}:{port}/api/history", timeout=10) as history_response:
                     history_payload = json.loads(history_response.read().decode("utf-8"))
                 self.assertEqual(history_response.status, 200)
                 self.assertEqual(len(history_payload["runs"]), 1)
+                self.assertEqual(history_payload["runs"][0]["runtime_id"], "codex")
 
                 run_id = history_payload["runs"][0]["run_id"]
                 with urllib.request.urlopen(
@@ -327,7 +363,7 @@ class PipelineTests(unittest.TestCase):
 
                 issue_id = next(
                     issue["id"]
-                    for issue in payload["report"]["issues"]
+                    for issue in report_payload["issues"]
                     if issue.get("patch_action") == "delete"
                 )
                 apply_request = urllib.request.Request(
@@ -363,7 +399,7 @@ class PipelineTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
-    def test_web_scan_returns_conflict_when_repository_is_busy(self) -> None:
+    def test_web_scan_job_reports_repository_lock_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / "service.py").write_text("print('debug')\n", encoding="utf-8")
@@ -377,18 +413,72 @@ class PipelineTests(unittest.TestCase):
             thread.start()
             try:
                 host, port = server.server_address
-                request = urllib.request.Request(
-                    f"http://{host}:{port}/api/scan",
-                    data=json.dumps({"path": str(repo)}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
+                with repository_operation_lock(repo):
+                    status, started = _start_scan_job(host, port, repo)
+                    self.assertEqual(status, 202)
+                    time.sleep(0.05)
+                failed = _wait_for_scan_job(host, port, started["job"]["job_id"])
+                self.assertEqual(failed["status"], "failed")
+                self.assertIn("其他操作", failed["error"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_web_scan_streams_partial_report_and_can_cancel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.py").write_text("print('debug')\n", encoding="utf-8")
+            executor = BlockingRuntimeExecutor()
+            server = build_server(
+                repo,
+                port=0,
+                runtime_registry=FakeRuntimeRegistry(),
+                runtime_executor=executor,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                status, started = _start_scan_job(host, port, repo)
+                self.assertEqual(status, 202)
+                job_id = started["job"]["job_id"]
+                self.assertTrue(executor.started.wait(timeout=5))
+
+                with urllib.request.urlopen(
+                    f"http://{host}:{port}/api/scans/{job_id}?report_version=-1",
+                    timeout=10,
+                ) as response:
+                    running = json.loads(response.read().decode("utf-8"))["job"]
+                self.assertEqual(running["stage"], "runtime")
+                self.assertEqual(running["status"], "running")
+                self.assertGreater(running["partial_report"]["summary"]["issue_count"], 0)
+
+                with urllib.request.urlopen(f"http://{host}:{port}/api/state", timeout=10) as response:
+                    active_scan = json.loads(response.read().decode("utf-8"))["active_scan"]
+                self.assertEqual(active_scan["job_id"], job_id)
+                self.assertIn("partial_report", active_scan)
+
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    _start_scan_job(host, port, repo)
+                self.assertEqual(raised.exception.code, 409)
+                conflict = json.loads(raised.exception.read().decode("utf-8"))
+                raised.exception.close()
+                self.assertEqual(conflict["job"]["job_id"], job_id)
+
+                cancel_request = urllib.request.Request(
+                    f"http://{host}:{port}/api/scans/{job_id}/cancel",
+                    data=b"",
                     method="POST",
                 )
-                with repository_operation_lock(repo):
-                    with self.assertRaises(urllib.error.HTTPError) as raised:
-                        urllib.request.urlopen(request, timeout=10)
-                self.assertEqual(raised.exception.code, 409)
-                raised.exception.close()
+                with urllib.request.urlopen(cancel_request, timeout=10) as response:
+                    cancelling = json.loads(response.read().decode("utf-8"))["job"]
+                self.assertEqual(cancelling["status"], "cancelling")
+                executor.release.set()
+                cancelled = _wait_for_scan_job(host, port, job_id)
+                self.assertEqual(cancelled["status"], "cancelled")
+                self.assertFalse((repository_data_dir(repo) / "report.json").exists())
             finally:
+                executor.release.set()
                 server.shutdown()
                 server.server_close()
 
