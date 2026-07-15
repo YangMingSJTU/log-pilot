@@ -33,7 +33,7 @@ flowchart LR
 - `storage` 按仓库规范化路径的 SHA-256 将产物隔离到用户应用数据目录。
 - `history` 将每次扫描保存到 `repositories/<repository_id>/runs/<run_id>/`。
 - `patching` 生成可审查 Diff，`remediation` 负责精确校验、原子采纳、备份和回滚。
-- `web` 提供目录与运行时选择、一键扫描、历史记录、问题审查、批量采纳和回滚。
+- `web` 提供目录与运行时选择、一键扫描和历史记录，并以按文件分组的纵向结果流就地展示原因、源码与 Diff，支持单项或文件级批量采纳及回滚。
 
 ## 运行时安全边界
 

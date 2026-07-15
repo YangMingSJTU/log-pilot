@@ -29,7 +29,10 @@ The selected repository is not used for generated artifacts. Reports, history, p
 
 Set `LOGPILOT_DATA_DIR` to override the root directory for tests or isolated environments. A repository may still contain a user-maintained `.logpilot.yaml` scan configuration; LogPilot never creates it.
 
-The workbench can apply exact deletion patches individually or in a checked batch. Every apply validates the saved source context, stores a backup under `applies/<apply_id>/`, and can roll back the latest unchanged transaction. Text-only AI suggestions remain review-only.
+The workbench groups findings by file in a single vertical result stream. Search and severity filters narrow the stream, high-risk findings open by default, and each expanded item keeps its reason, source context, and exact diff together. Exact deletion patches can be selected per item or per file and applied as one checked batch.
+
+Every apply validates the saved source context, stores a backup under `applies/<apply_id>/`, and can roll back the latest unchanged transaction. Text-only AI suggestions remain review-only.
+
 ## Development
 
 ```bash

@@ -359,7 +359,7 @@ def _html() -> str:
       overflow: hidden;
     }
     button, input, select { font: inherit; }
-    button, input, .runtime-control, .nav-item, .issue-row {
+    button, input, .runtime-control, .nav-item, .result-item {
       transition: border-color .14s ease, background-color .14s ease, color .14s ease, box-shadow .14s ease;
     }
     button {
@@ -617,7 +617,8 @@ def _html() -> str:
       border-radius: inherit;
     }
     .metric span { margin: 0; }
-    .workspace-section { margin-top: 28px; }
+    #currentPanel { max-width: 1180px; }
+    .workspace-section { margin-top: 22px; }
     .snapshot-banner {
       min-height: 48px;
       display: flex;
@@ -652,69 +653,92 @@ def _html() -> str:
       font-weight: 650;
     }
     .section-count { color: var(--muted); font-size: 11px; }
-    .legend { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 10px; }
-    .legend span { display: flex; align-items: center; gap: 6px; }
-    .legend i { width: 6px; height: 6px; border-radius: 50%; }
-    .legend .high-dot { background: var(--red); }
-    .legend .medium-dot { background: var(--amber); }
-    .legend .low-dot { background: var(--green); }
-    .analysis-workspace {
-      height: max(420px, calc(100dvh - 324px));
+    .results-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
       display: grid;
-      grid-template-columns: minmax(320px, .82fr) minmax(470px, 1.18fr);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02), 0 2px 8px rgba(0, 0, 0, .14);
-      overflow: hidden;
+      grid-template-columns: minmax(240px, 1fr) auto auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      background: rgba(9, 9, 10, .96);
+      backdrop-filter: blur(10px);
     }
-    .issue-pane, .detail {
+    .result-search {
       min-width: 0;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
+      height: 36px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #111113;
     }
-    .issue-pane { border-right: 1px solid var(--line); }
-    .pane-heading {
-      flex: 0 0 38px;
+    .result-search .icon { color: var(--subtle); }
+    .result-search input {
+      height: 34px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      font-size: 12px;
+    }
+    .result-search input:focus { border: 0; }
+    .severity-filters {
+      display: flex;
+      align-items: center;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-2);
+    }
+    .severity-filter {
+      height: 28px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      box-shadow: none;
+    }
+    .severity-filter:hover { border: 0; background: #202024; color: var(--ink); }
+    .severity-filter.active { background: #2a2435; color: #fff; box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .18); }
+    .results-meta {
+      min-height: 34px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 16px;
-      border-bottom: 1px solid var(--line);
-      background: #121214;
+      gap: 12px;
       color: var(--muted);
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0;
+      font-size: 11px;
     }
-    .list { flex: 1; max-height: none; overflow: auto; }
-    .issue-row {
+    .results-meta strong { color: var(--ink); font-weight: 600; }
+    .result-stream { display: grid; gap: 24px; }
+    .file-group {
+      min-width: 0;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .file-group-header {
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+    }
+    .file-toggle {
       width: 100%;
       height: auto;
-      min-height: 72px;
-      display: grid;
-      grid-template-columns: 20px auto minmax(0, 1fr);
-      gap: 10px;
-      align-items: start;
-      padding: 13px 16px;
-      border: 0;
-      border-bottom: 1px solid var(--line-soft);
-      border-radius: 0;
-      background: transparent;
-      color: var(--ink);
-    }
-    .issue-row:hover { background: #171719; }
-    .issue-row.active {
-      background: var(--accent-soft);
-      box-shadow: inset 2px 0 0 #a78bfa;
-    }
-    .issue-select { width: 20px; min-height: 22px; display: grid; place-items: center; }
-    .issue-select input { width: 14px; height: 14px; margin: 0; padding: 0; border: 0; border-radius: 3px; box-shadow: none; accent-color: var(--accent); cursor: pointer; }
-    .issue-select input:disabled { opacity: .28; cursor: default; }
-    .issue-main {
       min-width: 0;
-      padding: 0;
+      display: grid;
+      grid-template-columns: 18px 24px minmax(0, 1fr);
+      gap: 9px;
+      align-items: center;
+      padding: 8px 0;
       border: 0;
       border-radius: 0;
       background: transparent;
@@ -723,9 +747,70 @@ def _html() -> str:
       white-space: normal;
       box-shadow: none;
     }
-    .issue-main:hover { border-color: transparent; background: transparent; }
-    .issue-status { margin-left: 7px; color: var(--green); font-size: 10px; font-weight: 600; }
-    .issue-title { display: block; margin: 0 0 7px; font-size: 13px; font-weight: 650; }
+    .file-toggle:hover { border: 0; background: transparent; color: #fff; }
+    .file-caret { color: var(--subtle); transition: transform .16s ease; }
+    .file-group.collapsed .file-caret { transform: rotate(-90deg); }
+    .file-icon { color: #c4b5fd; }
+    .file-path { display: block; overflow: hidden; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .file-count { display: block; margin-top: 4px; color: var(--muted); font-family: inherit; font-size: 10px; font-weight: 400; }
+    .file-select, .issue-select { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; cursor: pointer; }
+    .file-select input, .issue-select input { width: 14px; height: 14px; margin: 0; padding: 0; border: 0; border-radius: 3px; box-shadow: none; accent-color: var(--accent); cursor: pointer; }
+    .file-select input:disabled, .issue-select input:disabled { opacity: .28; cursor: default; }
+    .file-results { display: grid; gap: 10px; }
+    .file-group.collapsed .file-results { display: none; }
+    .result-item {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .16);
+    }
+    .result-item:hover { border-color: #36363d; }
+    .result-item.expanded { border-color: #3a3544; }
+    .result-item.selected { border-color: rgba(139, 92, 246, .55); box-shadow: 0 0 0 1px rgba(139, 92, 246, .10); }
+    .result-item-header {
+      min-height: 66px;
+      display: grid;
+      grid-template-columns: 22px 34px minmax(0, 1fr) 24px;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 14px;
+    }
+    .issue-select { width: 22px; justify-content: center; }
+    .result-toggle {
+      min-width: 0;
+      width: 100%;
+      height: auto;
+      display: block;
+      padding: 4px 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      justify-content: flex-start;
+      white-space: normal;
+      box-shadow: none;
+    }
+    .result-toggle:hover { border: 0; background: transparent; }
+    .result-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .result-title { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .issue-status { flex: 0 0 auto; color: var(--green); font-size: 10px; font-weight: 600; }
+    .result-rules { margin-top: 6px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .result-caret { color: var(--subtle); transition: transform .16s ease; }
+    .result-item.expanded .result-caret { transform: rotate(180deg); }
+    .result-content { padding: 0 16px 16px 80px; border-top: 1px solid var(--line-soft); }
+    .finding-copy { padding: 14px 0 2px; }
+    .copy-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 12px; padding: 5px 0; font-size: 11px; line-height: 1.6; }
+    .copy-row > span { color: var(--subtle); }
+    .copy-row p { margin: 0 0 5px; }
+    .copy-row p:last-child { margin-bottom: 0; }
+    .inline-block { margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .inline-block-header { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); color: var(--muted); font-size: 10px; }
+    .inline-block pre { min-height: 0; max-height: 280px; padding: 13px 14px; flex: none; background: #090a0d; white-space: pre; }
+    .diff-remove { display: block; margin: 0 -14px; padding: 0 14px; background: rgba(251, 113, 133, .10); color: #fda4af; }
+    .result-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
     .meta, .muted { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .pill {
       display: inline-block;
@@ -741,47 +826,6 @@ def _html() -> str:
     .medium { background: rgba(251, 191, 36, .10); color: #f8ca55; }
     .low { background: rgba(52, 211, 153, .10); color: #59dca9; }
     .debug { background: rgba(96, 165, 250, .10); color: #7eb7fb; }
-    .detail { min-height: 0; }
-    .detail-body {
-      flex: 0 0 auto;
-      max-height: 230px;
-      display: grid;
-      padding: 18px 20px;
-      gap: 13px;
-      border-bottom: 1px solid var(--line);
-      overflow: auto;
-      background: #101012;
-    }
-    .detail-body h3 { margin: 0; font-size: 16px; }
-    .kv { display: grid; grid-template-columns: 58px 1fr; gap: 8px; font-size: 12px; line-height: 1.55; }
-    .kv span:first-child { color: var(--subtle); }
-    .section-tabs {
-      flex: 0 0 auto;
-      display: flex;
-      gap: 3px;
-      padding: 5px 12px;
-      border-top: 1px solid var(--line-soft);
-      border-bottom: 1px solid var(--line);
-      background: var(--surface-2);
-    }
-    .section-tabs .apply-current { margin-left: auto; }
-    .mini-tab {
-      height: 30px;
-      padding: 0 10px;
-      border: 0;
-      border-radius: 5px;
-      background: transparent;
-      color: var(--muted);
-      font-size: 11px;
-      box-shadow: none;
-    }
-    .mini-tab:hover { border-color: transparent; background: #1d1d21; color: var(--ink); }
-    .mini-tab.active {
-      border: 0;
-      background: #272230;
-      color: #fff;
-      box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .22), 0 1px 2px rgba(0, 0, 0, .24);
-    }
     pre {
       flex: 1;
       margin: 0;
@@ -795,6 +839,29 @@ def _html() -> str:
       line-height: 1.6;
     }
     .empty { padding: 24px 16px; color: var(--muted); font-size: 12px; }
+    .results-empty { min-height: 220px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; }
+    .batch-bar {
+      position: fixed;
+      left: calc(230px + (100vw - 230px) / 2);
+      bottom: 20px;
+      z-index: 90;
+      width: min(650px, calc(100vw - 290px));
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 10px 12px 10px 18px;
+      border: 1px solid #4b4457;
+      border-radius: 8px;
+      background: #1b191f;
+      box-shadow: 0 20px 54px rgba(0, 0, 0, .58), inset 0 1px 0 rgba(255, 255, 255, .04);
+      transform: translateX(-50%);
+    }
+    .batch-copy { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+    .batch-copy strong { font-size: 12px; }
+    .batch-copy span { color: var(--muted); font-size: 10px; }
+    .batch-actions { display: flex; gap: 8px; }
     .history-table {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1044,7 +1111,7 @@ def _html() -> str:
       .topbar { grid-template-columns: minmax(0, 1fr) auto; }
       .runtime-control { display: none; }
       .view-panel { padding-left: 28px; padding-right: 28px; }
-      .analysis-workspace { grid-template-columns: minmax(300px, .85fr) minmax(410px, 1.15fr); }
+      .batch-bar { left: calc(190px + (100vw - 190px) / 2); width: min(650px, calc(100vw - 240px)); }
     }
     @media (max-width: 820px) {
       body { overflow: auto; }
@@ -1069,9 +1136,14 @@ def _html() -> str:
       }
       main { overflow: visible; }
       .view-panel { padding: 22px 20px 32px; }
-      .analysis-workspace { height: auto; grid-template-columns: 1fr; }
-      .issue-pane { height: 390px; border-right: 0; border-bottom: 1px solid var(--line); }
-      .detail { min-height: 560px; }
+      .results-toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas: "search action" "filters filters";
+      }
+      .result-search { grid-area: search; }
+      .severity-filters { grid-area: filters; justify-self: start; }
+      #fullPatchButton { grid-area: action; }
+      .batch-bar { left: 50%; bottom: 16px; width: calc(100vw - 32px); }
       .history-header { display: none; }
       .history-row { grid-template-columns: 1fr auto; }
       .history-score, .history-stats { display: none; }
@@ -1080,7 +1152,6 @@ def _html() -> str:
       .runtime-row { grid-template-columns: minmax(150px, 1fr) auto; }
       .runtime-row .runtime-value { display: none; }
       .section-actions { gap: 8px; }
-      .legend { display: none; }
       .snapshot-banner { align-items: flex-start; flex-direction: column; }
     }
     @media (max-width: 560px) {
@@ -1095,6 +1166,15 @@ def _html() -> str:
       .score-panel { grid-column: 1 / -1; }
       .summary-grid > * { border: 1px solid var(--line); }
       .compact-action span { display: none; }
+      .file-group-header { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+      .file-select { justify-self: start; margin-left: 51px; }
+      .result-item-header { grid-template-columns: 20px 32px minmax(0, 1fr) 20px; gap: 8px; padding: 10px; }
+      .result-title-line { align-items: flex-start; flex-wrap: wrap; }
+      .result-title { white-space: normal; }
+      .result-content { padding: 0 12px 14px; }
+      .copy-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+      .batch-copy span { display: none; }
+      .batch-bar { min-height: 54px; gap: 10px; padding-left: 14px; }
     }
     @media (prefers-reduced-motion: reduce) {
       .toast, .toast.leaving { animation: none; }
@@ -1132,30 +1212,18 @@ def _html() -> str:
         </div>
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
         <section class="workspace-section">
-          <div class="section-bar">
-            <div class="section-title"><h2>问题清单</h2></div>
-            <div class="section-actions">
-              <div class="legend"><span><i class="high-dot"></i>高风险</span><span><i class="medium-dot"></i>中风险</span><span><i class="low-dot"></i>低风险</span></div>
-              <button class="compact-action" id="batchApplyButton" type="button" disabled>批量采纳</button>
-              <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
+          <div class="results-toolbar">
+            <label class="result-search"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="resultSearch" type="search" aria-label="搜索分析结果" placeholder="搜索文件、问题或规则"></label>
+            <div class="severity-filters" id="severityFilters" role="group" aria-label="风险级别筛选">
+              <button class="severity-filter active" type="button" data-severity="all">全部</button>
+              <button class="severity-filter" type="button" data-severity="high">高</button>
+              <button class="severity-filter" type="button" data-severity="medium">中</button>
+              <button class="severity-filter" type="button" data-severity="low">低</button>
             </div>
+            <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
           </div>
-          <div class="analysis-workspace">
-            <section class="issue-pane">
-              <div class="pane-heading"><span>检测结果</span><span>文件位置</span></div>
-              <div class="list" id="issues"></div>
-            </section>
-            <section class="detail">
-              <div class="pane-heading"><span>问题详情</span><span>处理建议</span></div>
-            <div class="detail-body" id="issueDetail"></div>
-            <div class="section-tabs">
-              <button class="mini-tab active" id="sourceTab" type="button">相关代码</button>
-              <button class="mini-tab" id="patchTab" type="button">修改预览</button>
-              <button class="apply-current hidden" id="applyIssueButton" type="button">采纳此修改</button>
-            </div>
-            <pre id="detailPre">等待分析结果</pre>
-            </section>
-          </div>
+          <div class="results-meta"><span id="resultsSummary">等待分析结果</span><span>按文件分组</span></div>
+          <div class="result-stream" id="resultStream"></div>
         </section>
       </div>
       <section id="historyPanel" class="view-panel hidden">
@@ -1188,10 +1256,14 @@ def _html() -> str:
       </section>
     </main>
   </div>
+  <div class="batch-bar hidden" id="batchBar" role="region" aria-label="批量采纳操作">
+    <div class="batch-copy"><strong id="batchSelectionCount">已选择 0 项</strong><span id="batchSelectionFiles"></span></div>
+    <div class="batch-actions"><button class="secondary" id="clearSelectionButton" type="button">清空</button><button id="batchApplyButton" type="button">批量采纳</button></div>
+  </div>
   <div class="dialog-backdrop hidden" id="fullPatchDialog" role="dialog" aria-modal="true" aria-labelledby="fullPatchTitle">
     <section class="dialog">
       <header class="dialog-header">
-        <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的安全修改，可在问题清单中勾选后采纳</p></div>
+        <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的安全修改，可在结果流中勾选后采纳</p></div>
         <button class="secondary icon-only" id="closePatchDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </header>
       <pre id="fullPatchPre">暂无修改内容</pre>
@@ -1219,15 +1291,17 @@ def _html() -> str:
       report: null,
       patch: "",
       activeRunId: "",
-      selectedIssueId: "",
       selectedGroups: new Set(),
+      expandedGroups: new Set(),
+      collapsedFiles: new Set(),
+      searchQuery: "",
+      severityFilter: "all",
       appliedIssueIds: new Set(),
       applyRecords: [],
       latestApplyId: "",
       canRollback: false,
       pendingIssueIds: [],
       applying: false,
-      detailMode: "source",
       diagnosticsOpen: false,
       runtimes: [],
       selectedRuntime: "",
@@ -1246,16 +1320,21 @@ def _html() -> str:
     const runtimeSelect = document.querySelector("#runtimeSelect");
     const runtimeDot = document.querySelector("#runtimeDot");
     const refreshRuntimesButton = document.querySelector("#refreshRuntimesButton");
-    const sourceTab = document.querySelector("#sourceTab");
-    const patchTab = document.querySelector("#patchTab");
+    const resultSearch = document.querySelector("#resultSearch");
+    const severityFilters = document.querySelector("#severityFilters");
+    const resultStream = document.querySelector("#resultStream");
+    const resultsSummary = document.querySelector("#resultsSummary");
     const fullPatchButton = document.querySelector("#fullPatchButton");
     const fullPatchDialog = document.querySelector("#fullPatchDialog");
     const fullPatchPre = document.querySelector("#fullPatchPre");
     const closePatchDialog = document.querySelector("#closePatchDialog");
     const diagnosticsToggle = document.querySelector("#diagnosticsToggle");
     const diagnosticsPre = document.querySelector("#diagnosticsPre");
+    const batchBar = document.querySelector("#batchBar");
+    const batchSelectionCount = document.querySelector("#batchSelectionCount");
+    const batchSelectionFiles = document.querySelector("#batchSelectionFiles");
+    const clearSelectionButton = document.querySelector("#clearSelectionButton");
     const batchApplyButton = document.querySelector("#batchApplyButton");
-    const applyIssueButton = document.querySelector("#applyIssueButton");
     const snapshotBanner = document.querySelector("#snapshotBanner");
     const rollbackButton = document.querySelector("#rollbackButton");
     const rescanButton = document.querySelector("#rescanButton");
@@ -1279,8 +1358,18 @@ def _html() -> str:
       window.localStorage.setItem("logpilot.runtime", state.selectedRuntime);
       renderRuntimes();
     });
-    sourceTab.addEventListener("click", () => setDetailMode("source"));
-    patchTab.addEventListener("click", () => setDetailMode("patch"));
+    resultSearch.addEventListener("input", () => {
+      state.searchQuery = resultSearch.value;
+      renderResultStream();
+    });
+    severityFilters.addEventListener("click", event => {
+      const button = event.target.closest("button[data-severity]");
+      if (!button) return;
+      state.severityFilter = button.dataset.severity;
+      renderResultStream();
+    });
+    resultStream.addEventListener("click", handleResultStreamClick);
+    resultStream.addEventListener("change", handleResultStreamChange);
     fullPatchButton.addEventListener("click", openFullPatch);
     closePatchDialog.addEventListener("click", closeFullPatch);
     fullPatchDialog.addEventListener("click", event => {
@@ -1291,9 +1380,9 @@ def _html() -> str:
       const groups = issueGroups().filter(group => state.selectedGroups.has(group.id));
       openApplyDialog(groups.flatMap(group => patchIssueIds(group)));
     });
-    applyIssueButton.addEventListener("click", () => {
-      const group = selectedIssueGroup();
-      if (group) openApplyDialog(patchIssueIds(group));
+    clearSelectionButton.addEventListener("click", () => {
+      state.selectedGroups = new Set();
+      renderResultStream();
     });
     rollbackButton.addEventListener("click", rollbackLatestApply);
     rescanButton.addEventListener("click", () => startScan(repoPath.value));
@@ -1453,7 +1542,6 @@ def _html() -> str:
         if (payload.metadata && payload.metadata.repository) {
           updateRepositoryIdentity(payload.metadata.repository);
         }
-        renderDetailContent();
         await loadApplies();
         showTab("current");
         showToast("历史分析已加载", "success");
@@ -1484,9 +1572,7 @@ def _html() -> str:
           return group && !isGroupApplied(group);
         })
       );
-      renderIssues((state.report && state.report.issues) || []);
-      renderIssueDetail();
-      renderDetailContent();
+      renderResultStream();
       renderSnapshotBanner();
     }
 
@@ -1598,13 +1684,6 @@ def _html() -> str:
       browseButton.querySelector("span").textContent = value ? "选择中..." : "选择仓库";
     }
 
-    function setDetailMode(mode) {
-      state.detailMode = mode;
-      sourceTab.classList.toggle("active", mode === "source");
-      patchTab.classList.toggle("active", mode === "patch");
-      renderDetailContent();
-    }
-
     function openFullPatch() {
       fullPatchPre.textContent = state.patch || "本次分析没有生成安全修改。";
       fullPatchDialog.classList.remove("hidden");
@@ -1683,33 +1762,41 @@ def _html() -> str:
       state.report = null;
       state.patch = "";
       state.activeRunId = "";
-      state.selectedIssueId = "";
       state.selectedGroups = new Set();
+      state.expandedGroups = new Set();
+      state.collapsedFiles = new Set();
+      state.searchQuery = "";
+      state.severityFilter = "all";
       state.appliedIssueIds = new Set();
       state.applyRecords = [];
-      state.detailMode = "source";
+      resultSearch.value = "";
       document.querySelector("#metrics").innerHTML = summaryMarkup(null);
-      document.querySelector("#issues").innerHTML = '<div class="empty">暂无分析结果</div>';
-      document.querySelector("#issueDetail").innerHTML = '<div class="muted">选择仓库并开始分析。</div>';
+      resultsSummary.textContent = "等待分析结果";
+      resultStream.innerHTML = '<div class="results-empty">选择仓库并开始分析</div>';
       fullPatchButton.disabled = true;
       batchApplyButton.disabled = true;
+      batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
-      setDetailMode("source");
+      updateSeverityFilters();
       renderDiagnostics();
     }
 
     function renderReport(report) {
       state.report = report;
       state.patch = "";
-      state.selectedIssueId = (report.issues && report.issues[0] && report.issues[0].id) || "";
       state.selectedGroups = new Set();
+      state.collapsedFiles = new Set();
+      state.searchQuery = "";
+      state.severityFilter = "all";
       state.appliedIssueIds = new Set();
       state.applyRecords = [];
+      resultSearch.value = "";
       fullPatchButton.disabled = true;
       renderMetrics(report.summary);
-      renderIssues(report.issues || []);
-      renderIssueDetail();
-      setDetailMode("source");
+      state.expandedGroups = new Set(
+        issueGroups().filter(group => group.primary.severity === "high").map(group => group.id)
+      );
+      renderResultStream();
       renderDiagnostics();
     }
 
@@ -1747,61 +1834,74 @@ def _html() -> str:
       return "高风险";
     }
 
-    function renderIssues(issues) {
-      const target = document.querySelector("#issues");
-      if (!issues.length) {
-        target.innerHTML = '<div class="empty">未发现问题</div>';
-        updateApplyControls();
-        return;
-      }
-      const groups = issueGroups();
-      target.innerHTML = groups.map(group => {
-        const issue = group.primary;
-        const applied = isGroupApplied(group);
-        const applicable = patchIssueIds(group).length > 0 && !applied;
-        return `
-        <div class="issue-row ${group.issues.some(item => item.id === state.selectedIssueId) ? "active" : ""}">
-          <label class="issue-select" title="${applicable ? "选择此修改" : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
-          <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
-          <button class="issue-main" type="button" data-group-id="${esc(group.id)}"><span class="issue-title">${esc(issue.title)}${applied ? '<span class="issue-status">已采纳</span>' : ""}</span><span class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(ruleText(issue.kind))}</span></button>
-        </div>`;
-      }).join("");
-      target.querySelectorAll("button[data-group-id]").forEach(button => {
-        button.addEventListener("click", () => {
-          const group = issueGroups().find(item => item.id === button.dataset.groupId);
-          if (!group) return;
-          state.selectedIssueId = group.primary.id;
-          renderIssues(state.report.issues || []);
-          renderIssueDetail();
-          renderDetailContent();
-        });
+    function renderResultStream() {
+      updateSeverityFilters();
+      if (!state.report) return;
+      const allGroups = issueGroups();
+      const files = groupedFiles();
+      const visibleCount = files.reduce((total, file) => total + file.groups.length, 0);
+      resultsSummary.innerHTML = `<strong>显示 ${visibleCount} / ${allGroups.length} 个问题位置</strong> · ${files.length} 个文件`;
+      resultStream.innerHTML = files.length
+        ? files.map(fileGroupMarkup).join("")
+        : '<div class="results-empty">没有匹配的分析结果</div>';
+      resultStream.querySelectorAll("input[data-file-check]").forEach(input => {
+        const file = files.find(item => item.path === input.dataset.fileCheck);
+        const applicable = file ? file.groups.filter(isGroupApplicable) : [];
+        const selectedCount = applicable.filter(group => state.selectedGroups.has(group.id)).length;
+        input.checked = applicable.length > 0 && selectedCount === applicable.length;
+        input.indeterminate = selectedCount > 0 && selectedCount < applicable.length;
       });
-      target.querySelectorAll("input[data-group-check]").forEach(input => {
-        input.addEventListener("change", () => {
-          if (input.checked) state.selectedGroups.add(input.dataset.groupCheck);
-          else state.selectedGroups.delete(input.dataset.groupCheck);
-          updateApplyControls();
-        });
-      });
-      updateApplyControls();
+      renderBatchBar();
     }
 
     function issueGroups() {
       const issues = (state.report && state.report.issues) || [];
+      const logs = (state.report && state.report.logs) || [];
+      const logsById = new Map(logs.map(log => [log.id, log]));
       const severityRank = { high: 3, medium: 2, low: 1 };
       const groups = new Map();
       issues.forEach(issue => {
         const id = issue.log_call_id || issue.id;
-        if (!groups.has(id)) groups.set(id, { id, issues: [], primary: issue });
+        if (!groups.has(id)) groups.set(id, { id, issues: [], primary: issue, log: logsById.get(issue.log_call_id) || null });
         const group = groups.get(id);
         group.issues.push(issue);
         if ((severityRank[issue.severity] || 0) > (severityRank[group.primary.severity] || 0)) group.primary = issue;
       });
-      return [...groups.values()];
+      return [...groups.values()].map(group => ({
+        ...group,
+        filePath: group.primary.file_path,
+        line: Number(group.primary.line || 0),
+        searchText: [
+          group.primary.file_path,
+          group.primary.line,
+          ...group.issues.flatMap(issue => [issue.title, ruleText(issue.kind), issue.reason, issue.suggestion])
+        ].join(" ").toLocaleLowerCase("zh-CN")
+      }));
     }
 
-    function selectedIssueGroup() {
-      return issueGroups().find(group => group.issues.some(issue => issue.id === state.selectedIssueId)) || issueGroups()[0] || null;
+    function visibleIssueGroups() {
+      const query = state.searchQuery.trim().toLocaleLowerCase("zh-CN");
+      return issueGroups().filter(group => {
+        const severityMatches = state.severityFilter === "all" || group.primary.severity === state.severityFilter;
+        return severityMatches && (!query || group.searchText.includes(query));
+      });
+    }
+
+    function groupedFiles() {
+      const severityRank = { high: 3, medium: 2, low: 1 };
+      const files = new Map();
+      visibleIssueGroups().forEach(group => {
+        if (!files.has(group.filePath)) files.set(group.filePath, { path: group.filePath, groups: [], maxRank: 0 });
+        const file = files.get(group.filePath);
+        file.groups.push(group);
+        file.maxRank = Math.max(file.maxRank, severityRank[group.primary.severity] || 0);
+      });
+      return [...files.values()].map(file => ({
+        ...file,
+        groups: file.groups.sort((left, right) =>
+          (severityRank[right.primary.severity] || 0) - (severityRank[left.primary.severity] || 0) || left.line - right.line
+        )
+      })).sort((left, right) => right.maxRank - left.maxRank || left.path.localeCompare(right.path, "zh-CN"));
     }
 
     function patchIssueIds(group) {
@@ -1812,75 +1912,132 @@ def _html() -> str:
       return group.issues.some(issue => state.appliedIssueIds.has(issue.id));
     }
 
-    function updateApplyControls() {
-      const selected = issueGroups().filter(group => state.selectedGroups.has(group.id) && !isGroupApplied(group));
+    function isGroupApplicable(group) {
+      return patchIssueIds(group).length > 0 && !isGroupApplied(group);
+    }
+
+    function updateSeverityFilters() {
+      severityFilters.querySelectorAll("button[data-severity]").forEach(button => {
+        const active = button.dataset.severity === state.severityFilter;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+
+    function renderBatchBar() {
+      const selected = issueGroups().filter(group => state.selectedGroups.has(group.id) && isGroupApplicable(group));
+      const files = new Set(selected.map(group => group.filePath));
+      batchBar.classList.toggle("hidden", !selected.length);
+      batchSelectionCount.textContent = `已选择 ${selected.length} 项`;
+      batchSelectionFiles.textContent = `${files.size} 个文件`;
       batchApplyButton.disabled = !selected.length || state.applying;
       batchApplyButton.textContent = selected.length ? `批量采纳（${selected.length}）` : "批量采纳";
-      const group = selectedIssueGroup();
-      const applicable = group && patchIssueIds(group).length && !isGroupApplied(group);
-      applyIssueButton.classList.toggle("hidden", !group || !patchIssueIds(group).length);
-      applyIssueButton.disabled = !applicable || state.applying;
-      applyIssueButton.textContent = group && isGroupApplied(group) ? "已采纳" : "采纳此修改";
     }
 
-    function renderIssueDetail() {
-      const detail = document.querySelector("#issueDetail");
-      const issue = selectedIssue();
-      if (!issue) {
-        detail.innerHTML = '<div class="muted">暂无问题详情</div>';
+    function fileGroupMarkup(file) {
+      const collapsed = state.collapsedFiles.has(file.path);
+      const applicable = file.groups.filter(isGroupApplicable);
+      return `
+        <section class="file-group ${collapsed ? "collapsed" : ""}" data-file-group="${esc(file.path)}">
+          <div class="file-group-header">
+            <button class="file-toggle" type="button" data-file-toggle="${esc(file.path)}" aria-expanded="${collapsed ? "false" : "true"}">
+              <svg class="icon file-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              <svg class="icon file-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span><span class="file-path">${esc(file.path)}</span><span class="file-count">${file.groups.length} 个问题位置 · ${applicable.length} 项可采纳</span></span>
+            </button>
+            <label class="file-select" title="${applicable.length ? "选择该文件的全部精确修改" : "该文件没有精确修改"}"><input type="checkbox" data-file-check="${esc(file.path)}" ${applicable.length ? "" : "disabled"}>${applicable.length ? "选择可采纳项" : "无精确修改"}</label>
+          </div>
+          <div class="file-results">${file.groups.map(resultItemMarkup).join("")}</div>
+        </section>`;
+    }
+
+    function resultItemMarkup(group) {
+      const issue = group.primary;
+      const expanded = state.expandedGroups.has(group.id);
+      const applied = isGroupApplied(group);
+      const applicable = isGroupApplicable(group);
+      const rules = [...new Set(group.issues.map(item => ruleText(item.kind)).filter(Boolean))];
+      const reasons = uniqueText(group.issues.map(item => item.reason));
+      const suggestions = uniqueText(group.issues.map(item => item.suggestion));
+      const patchIssue = group.issues.find(item => item.patch_action === "delete" && item.source_line);
+      return `
+        <article class="result-item ${expanded ? "expanded" : ""} ${state.selectedGroups.has(group.id) ? "selected" : ""}">
+          <div class="result-item-header">
+            <label class="issue-select" title="${applicable ? "选择此修改" : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
+            <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
+            <button class="result-toggle" type="button" data-group-toggle="${esc(group.id)}" aria-expanded="${expanded ? "true" : "false"}">
+              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span>${applied ? '<span class="issue-status">已采纳</span>' : ""}</span>
+              <span class="result-rules">第 ${esc(issue.line)} 行 · ${esc(rules.join("、"))} · ${esc(sourceText(issue.source))}</span>
+            </button>
+            <svg class="icon result-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+          ${expanded ? `
+            <div class="result-content">
+              <div class="finding-copy">
+                <div class="copy-row"><span>原因</span><div>${reasons.map(value => `<p>${esc(value)}</p>`).join("") || "未提供"}</div></div>
+                <div class="copy-row"><span>建议</span><div>${suggestions.map(value => `<p>${esc(value)}</p>`).join("") || "未提供"}</div></div>
+              </div>
+              <div class="inline-block"><div class="inline-block-header"><span>相关代码</span><span>${esc(issue.file_path)}:${esc(issue.line)}</span></div><pre>${esc(relatedCodeTextFor(group))}</pre></div>
+              ${patchIssue ? `<div class="inline-block"><div class="inline-block-header"><span>修改预览</span><span>删除当前日志调用</span></div><pre><span class="diff-remove">- ${esc(patchIssue.source_line)}</span></pre></div>` : ""}
+              ${patchIssue ? `<div class="result-footer"><button type="button" data-apply-group="${esc(group.id)}" ${applicable ? "" : "disabled"}>${applied ? "已采纳" : "采纳此修改"}</button></div>` : ""}
+            </div>` : ""}
+        </article>`;
+    }
+
+    function uniqueText(values) {
+      return [...new Set(values.map(value => String(value || "").trim()).filter(Boolean))];
+    }
+
+    function relatedCodeTextFor(group) {
+      const issue = group.primary;
+      const context = issue.context || (group.log && group.log.context) || "";
+      if (!context) return "当前报告没有保存源码上下文，请重新运行分析。";
+      return context.split("\\n").map(line =>
+        line.trimStart().startsWith(String(issue.line) + ":") ? "> " + line : "  " + line
+      ).join("\\n");
+    }
+
+    function handleResultStreamClick(event) {
+      const fileToggle = event.target.closest("button[data-file-toggle]");
+      if (fileToggle) {
+        const path = fileToggle.dataset.fileToggle;
+        if (state.collapsedFiles.has(path)) state.collapsedFiles.delete(path);
+        else state.collapsedFiles.add(path);
+        renderResultStream();
         return;
       }
-      detail.innerHTML = `
-        <div>
-          <h3>${esc(issue.title)}${state.appliedIssueIds.has(issue.id) ? '<span class="issue-status">已采纳</span>' : ""}</h3>
-          <div class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(sourceText(issue.source))}</div>
-        </div>
-        <div class="kv"><span>级别</span><strong class="${esc(issue.severity === "high" ? "danger" : issue.severity === "medium" ? "warning" : "success")}">${esc(severityText(issue.severity))}</strong></div>
-        <div class="kv"><span>原因</span><div>${esc(issue.reason)}</div></div>
-        <div class="kv"><span>建议</span><div>${esc(issue.suggestion)}</div></div>
-      `;
-    }
-
-    function renderDetailContent() {
-      const target = document.querySelector("#detailPre");
-      target.textContent = state.detailMode === "patch" ? issuePatchText() : relatedCodeText();
-      updateApplyControls();
-    }
-
-    function selectedIssue() {
-      const issues = (state.report && state.report.issues) || [];
-      return issues.find(issue => issue.id === state.selectedIssueId) || issues[0] || null;
-    }
-
-    function selectedIssueLog() {
-      const issue = selectedIssue();
-      const logs = (state.report && state.report.logs) || [];
-      if (!issue) return null;
-      return logs.find(log => log.id === issue.log_call_id) || null;
-    }
-
-    function relatedCodeText() {
-      const issue = selectedIssue();
-      if (!issue) return "选择一个问题查看相关代码。";
-      const log = selectedIssueLog();
-      const context = issue.context || (log && log.context) || "";
-      if (!context) return issue.file_path + ":" + issue.line + "\\n\\n当前报告没有保存源码上下文，请重新运行分析。";
-      const marked = context.split("\\n").map(line =>
-        line.startsWith(String(issue.line) + ":") ? "> " + line : "  " + line
-      ).join("\\n");
-      return issue.file_path + ":" + issue.line + "\\n\\n" + marked;
-    }
-
-    function issuePatchText() {
-      const group = selectedIssueGroup();
-      const issue = group && (group.issues.find(item => item.patch_action === "delete" && item.source_line) || group.primary);
-      if (!issue) return "选择一个问题查看修改预览。";
-      const log = selectedIssueLog();
-      const sourceLine = issue.source_line || (log && log.source_line) || "";
-      if (issue.patch_action === "delete" && sourceLine) {
-        return "文件  " + issue.file_path + "\\n位置  第 " + issue.line + " 行\\n操作  删除当前日志\\n\\n- " + sourceLine;
+      const groupToggle = event.target.closest("button[data-group-toggle]");
+      if (groupToggle) {
+        const id = groupToggle.dataset.groupToggle;
+        if (state.expandedGroups.has(id)) state.expandedGroups.delete(id);
+        else state.expandedGroups.add(id);
+        renderResultStream();
+        return;
       }
-      return "当前问题没有可安全自动生成的修改。\\n\\n处理建议\\n" + issue.suggestion;
+      const applyButton = event.target.closest("button[data-apply-group]");
+      if (applyButton) {
+        const group = issueGroups().find(item => item.id === applyButton.dataset.applyGroup);
+        if (group) openApplyDialog(patchIssueIds(group));
+      }
+    }
+
+    function handleResultStreamChange(event) {
+      const groupInput = event.target.closest("input[data-group-check]");
+      if (groupInput) {
+        if (groupInput.checked) state.selectedGroups.add(groupInput.dataset.groupCheck);
+        else state.selectedGroups.delete(groupInput.dataset.groupCheck);
+        renderResultStream();
+        return;
+      }
+      const fileInput = event.target.closest("input[data-file-check]");
+      if (!fileInput) return;
+      const file = groupedFiles().find(item => item.path === fileInput.dataset.fileCheck);
+      if (!file) return;
+      file.groups.filter(isGroupApplicable).forEach(group => {
+        if (fileInput.checked) state.selectedGroups.add(group.id);
+        else state.selectedGroups.delete(group.id);
+      });
+      renderResultStream();
     }
 
     function renderDiagnostics() {
