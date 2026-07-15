@@ -463,7 +463,7 @@ def _html() -> str:
       height: 100dvh;
       display: grid;
       grid-template-columns: 232px minmax(0, 1fr);
-      grid-template-rows: 64px minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
       overflow: hidden;
     }
     .sidebar {
@@ -550,19 +550,78 @@ def _html() -> str:
       background: var(--green);
       box-shadow: 0 0 0 3px rgba(52, 211, 153, .12);
     }
-    .topbar {
-      grid-column: 2;
-      grid-row: 1;
-      min-height: 64px;
+    .analysis-launch {
+      margin-bottom: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025), 0 1px 2px rgba(0, 0, 0, .16);
+      overflow: hidden;
+    }
+    .analysis-commandbar {
+      min-height: 66px;
       display: grid;
       grid-template-columns: minmax(360px, 1fr) 180px auto;
       gap: 12px;
       align-items: center;
-      padding: 11px 22px;
-      border-bottom: 1px solid var(--line);
-      background: #0d0d0e;
-      backdrop-filter: none;
+      padding: 13px 14px;
     }
+    .analysis-options {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      border-top: 1px solid var(--line);
+      background: #0f0f11;
+    }
+    .analysis-option {
+      min-width: 0;
+      min-height: 66px;
+      display: grid;
+      grid-template-columns: auto minmax(150px, 220px) minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+    }
+    .analysis-option:first-child { border-right: 1px solid var(--line); }
+    .analysis-option-label { color: var(--muted); font-size: 10px; font-weight: 650; }
+    .analysis-option-summary {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--subtle);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .preset-control {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 34px;
+      gap: 6px;
+      align-items: center;
+    }
+    .preset-control select, .preset-library select {
+      height: 34px;
+      padding: 0 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #151518;
+    }
+    .preset-add { width: 34px; height: 34px; padding: 0; }
+    .preset-add .icon { width: 14px; height: 14px; }
+    .preset-library {
+      min-height: 54px;
+      display: grid;
+      grid-template-columns: auto minmax(180px, 260px) auto auto auto;
+      gap: 8px;
+      align-items: center;
+      padding: 9px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #101012;
+    }
+    .preset-library-label { color: var(--muted); font-size: 10px; font-weight: 650; }
+    .preset-library button { height: 34px; }
+    .preset-library .icon-only { width: 34px; padding: 0; }
+    .preset-dialog-body { display: grid; gap: 9px; padding: 22px; }
+    .preset-dialog-body label { color: var(--muted); font-size: 11px; }
     .repo-control {
       min-width: 0;
       display: grid;
@@ -616,7 +675,7 @@ def _html() -> str:
     }
     main {
       grid-column: 2;
-      grid-row: 2;
+      grid-row: 1;
       min-width: 0;
       min-height: 0;
       padding: 0;
@@ -693,7 +752,7 @@ def _html() -> str:
     .risk-stat.high-risk { --risk-color: var(--red); }
     .risk-stat.medium-risk { --risk-color: var(--amber); }
     .risk-stat.low-risk { --risk-color: var(--green); }
-    #currentPanel { max-width: 1180px; }
+    #currentPanel { max-width: 1180px; padding-top: 24px; }
     .workspace-section { margin-top: 22px; }
     .snapshot-banner {
       min-height: 48px;
@@ -783,6 +842,10 @@ def _html() -> str:
     }
     .severity-filter:hover { border: 0; background: #202024; color: var(--ink); }
     .severity-filter.active { background: #2a2435; color: #fff; box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .18); }
+    .toolbar-actions, .file-header-actions, .file-fold-actions { display: flex; align-items: center; gap: 7px; }
+    .file-header-actions { justify-content: flex-end; }
+    .file-fold-actions { gap: 4px; }
+    .file-fold-button { width: 30px; height: 30px; padding: 0; }
     .results-meta {
       min-height: 34px;
       display: flex;
@@ -1277,9 +1340,10 @@ def _html() -> str:
 
     @media (max-width: 1080px) {
       .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
-      .topbar, main { grid-column: 2; }
-      .topbar { grid-template-columns: minmax(0, 1fr) auto; }
-      .runtime-control { display: none; }
+      main { grid-column: 2; }
+      .analysis-commandbar { grid-template-columns: minmax(260px, 1fr) 160px auto; }
+      .analysis-option { grid-template-columns: auto minmax(130px, 1fr); }
+      .analysis-option-summary { grid-column: 1 / -1; }
       .view-panel { padding-left: 28px; padding-right: 28px; }
       .batch-bar { left: calc(190px + (100vw - 190px) / 2); width: min(650px, calc(100vw - 240px)); }
     }
@@ -1299,13 +1363,13 @@ def _html() -> str:
       .sidebar-footer { display: none; }
       .side-nav { display: flex; justify-content: flex-end; align-items: center; padding: 0 14px; }
       .nav-item { width: auto; grid-template-columns: 18px auto; }
-      .topbar {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        padding: 10px 16px;
-      }
       main { overflow: visible; }
       .view-panel { padding: 22px 20px 32px; }
+      .analysis-commandbar { grid-template-columns: minmax(0, 1fr) 160px auto; }
+      .analysis-options { grid-template-columns: 1fr; }
+      .analysis-option { grid-template-columns: auto minmax(150px, 220px) minmax(0, 1fr); }
+      .analysis-option:first-child { border-right: 0; border-bottom: 1px solid var(--line); }
+      .analysis-option-summary { grid-column: auto; }
       .summary-grid { grid-template-columns: minmax(160px, 1.2fr) repeat(3, minmax(92px, 1fr)); }
       .metric:nth-child(4) { border-right: 0; }
       .risk-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); }
@@ -1315,7 +1379,7 @@ def _html() -> str:
       }
       .result-search { grid-area: search; }
       .severity-filters { grid-area: filters; justify-self: start; }
-      #fullPatchButton { grid-area: action; }
+      .toolbar-actions { grid-area: action; }
       .batch-bar { left: 50%; bottom: 16px; width: calc(100vw - 32px); }
       .history-header { display: none; }
       .history-row { grid-template-columns: 1fr auto; }
@@ -1328,6 +1392,7 @@ def _html() -> str:
       .language-option:nth-child(2) { border-right: 0; }
       .language-option:nth-child(-n+2) { border-bottom: 1px solid var(--line-soft); }
       .template-layout { grid-template-columns: 1fr; }
+      .preset-library { grid-template-columns: auto minmax(150px, 1fr) auto auto auto; }
       .template-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid var(--line); }
       .section-actions { gap: 8px; }
       .snapshot-banner { align-items: flex-start; flex-direction: column; }
@@ -1337,17 +1402,28 @@ def _html() -> str:
       .brand { height: 56px; padding: 0 16px; }
       .side-nav { justify-content: stretch; padding: 8px; border-top: 1px solid var(--line-soft); }
       .nav-item { flex: 1; justify-items: center; grid-template-columns: 18px auto; }
-      .topbar { grid-template-columns: 1fr; }
+      .analysis-commandbar { grid-template-columns: 1fr; }
       .repo-control { grid-template-columns: 1fr auto; }
       #scanButton { width: 100%; }
+      .analysis-option { grid-template-columns: 1fr; gap: 7px; }
+      .analysis-option-summary { grid-column: auto; }
+      .preset-library { grid-template-columns: 1fr auto auto auto; }
+      .preset-library-label { grid-column: 1 / -1; }
       .summary-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
       .score-panel { grid-column: 1 / -1; min-height: 104px; border-right: 0; border-bottom: 1px solid var(--line); }
       .metric { grid-column: span 2; min-height: 84px; padding: 14px 12px; }
       .metric strong { margin-top: 10px; font-size: 23px; }
       .risk-panel { grid-column: 1 / -1; min-height: 104px; }
       .compact-action span { display: none; }
+      .results-toolbar {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "search" "action" "filters";
+      }
+      .toolbar-actions { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .toolbar-actions .compact-action { width: 100%; }
+      .toolbar-actions .compact-action span { display: inline; }
       .file-group-header { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-      .file-select { justify-self: start; margin-left: 51px; }
+      .file-header-actions { justify-content: flex-start; margin-left: 51px; }
       .result-item-header { grid-template-columns: 20px 32px minmax(0, 1fr) 20px; gap: 8px; padding: 10px; }
       .result-title-line { align-items: flex-start; flex-wrap: wrap; }
       .result-title { white-space: normal; }
@@ -1370,26 +1446,40 @@ def _html() -> str:
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark" aria-hidden="true">LP</span><strong>LogPilot</strong></div>
       <nav class="side-nav" aria-label="主要导航">
-        <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span><span>分析概览</span></button>
+        <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span><span>仓库分析</span></button>
         <button class="nav-item" id="historyTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span><span>历史记录</span></button>
         <button class="nav-item" id="settingsTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span><span>设置</span></button>
       </nav>
       <div class="sidebar-footer"><span class="local-dot"></span><span>本地模式</span></div>
     </aside>
-    <header class="topbar">
-      <div class="repo-control">
-        <input id="repoPath" type="text" spellcheck="false" aria-label="仓库路径" placeholder="D:\\GitHub\\log-pilot">
-        <button class="secondary" id="browseButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><span>选择仓库</span></button>
-      </div>
-      <label class="runtime-control" title="选择执行日志分析的本机运行时">
-        <span class="state-dot offline" id="runtimeDot"></span>
-        <select id="runtimeSelect" aria-label="分析运行时"><option value="">检测运行时...</option></select>
-      </label>
-      <button id="scanButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 3 14 9-14 9z"/></svg><span>开始分析</span></button>
-    </header>
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
     <main>
       <div class="view-panel" id="currentPanel">
+        <section class="analysis-launch" aria-label="分析配置">
+          <div class="analysis-commandbar">
+            <div class="repo-control">
+              <input id="repoPath" type="text" spellcheck="false" aria-label="仓库路径" placeholder="D:\\GitHub\\log-pilot">
+              <button class="secondary" id="browseButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><span>选择仓库</span></button>
+            </div>
+            <label class="runtime-control" title="选择执行日志分析的本机运行时">
+              <span class="state-dot offline" id="runtimeDot"></span>
+              <select id="runtimeSelect" aria-label="分析运行时"><option value="">检测运行时...</option></select>
+            </label>
+            <button id="scanButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 3 14 9-14 9z"/></svg><span>开始分析</span></button>
+          </div>
+          <div class="analysis-options">
+            <div class="analysis-option">
+              <span class="analysis-option-label">分析语言</span>
+              <div class="preset-control"><select id="analysisLanguagePreset" aria-label="分析语言方案"></select><button class="secondary preset-add" id="addLanguagePreset" type="button" title="新增语言方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button></div>
+              <span class="analysis-option-summary" id="analysisLanguageSummary"></span>
+            </div>
+            <div class="analysis-option">
+              <span class="analysis-option-label">日志模板</span>
+              <div class="preset-control"><select id="analysisTemplatePreset" aria-label="日志模板方案"></select><button class="secondary preset-add" id="addTemplatePreset" type="button" title="新增模板方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button></div>
+              <span class="analysis-option-summary" id="analysisTemplateSummary"></span>
+            </div>
+          </div>
+        </section>
         <div class="snapshot-banner hidden" id="snapshotBanner">
           <div class="snapshot-copy"><span class="state-dot warning-dot"></span><span>源码已修改，当前结果为分析快照</span></div>
           <div class="snapshot-actions"><button class="secondary" id="rollbackButton" type="button">撤销上次采纳</button><button class="secondary" id="rescanButton" type="button">重新分析</button></div>
@@ -1404,7 +1494,11 @@ def _html() -> str:
               <button class="severity-filter" type="button" data-severity="medium">中</button>
               <button class="severity-filter" type="button" data-severity="low">低</button>
             </div>
-            <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
+            <div class="toolbar-actions">
+              <button class="secondary compact-action" id="expandAllButton" type="button" title="展开当前筛选结果" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 5 5 5-5"/><path d="m7 13 5 5 5-5"/></svg><span>全部展开</span></button>
+              <button class="secondary compact-action" id="collapseAllButton" type="button" title="折叠当前筛选结果" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 5-5 5 5"/><path d="m7 11 5-5 5 5"/></svg><span>全部折叠</span></button>
+              <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
+            </div>
           </div>
           <div class="results-meta"><span id="resultsSummary">等待分析结果</span><span>按文件分组</span></div>
           <div class="result-stream" id="resultStream"></div>
@@ -1425,6 +1519,7 @@ def _html() -> str:
               <div><h2>分析语言</h2><p>自动识别仓库语言，或固定本次分析范围</p></div>
               <div class="mode-switch" id="languageMode" role="group" aria-label="语言识别模式"><button type="button" data-language-mode="auto">自动识别</button><button type="button" data-language-mode="custom">手动选择</button></div>
             </header>
+            <div class="preset-library"><span class="preset-library-label">语言方案</span><select id="settingsLanguagePreset" aria-label="已保存的语言方案"></select><button class="secondary" id="loadLanguagePreset" type="button">载入</button><button class="secondary" id="saveLanguagePreset" type="button">保存当前</button><button class="secondary icon-only" id="deleteLanguagePreset" type="button" title="删除语言方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg></button></div>
             <div class="language-options" id="languageOptions"></div>
           </section>
           <section class="settings-surface">
@@ -1432,6 +1527,7 @@ def _html() -> str:
               <div><h2>日志模板</h2><p>异常日志优先沿用仓库中的实现风格</p></div>
               <button class="secondary" id="profileRepositoryButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 4-7"/></svg><span>扫描并推荐</span></button>
             </header>
+            <div class="preset-library"><span class="preset-library-label">模板方案</span><select id="settingsTemplatePreset" aria-label="已保存的模板方案"></select><button class="secondary" id="loadTemplatePreset" type="button">载入</button><button class="secondary" id="saveTemplatePreset" type="button">保存当前</button><button class="secondary icon-only" id="deleteTemplatePreset" type="button" title="删除模板方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg></button></div>
             <div class="template-layout">
               <nav class="template-nav" id="templateLanguageNav" aria-label="模板语言"></nav>
               <div class="template-editor">
@@ -1490,6 +1586,16 @@ def _html() -> str:
       <div class="dialog-actions"><button class="secondary" id="cancelApplyButton" type="button">取消</button><button id="confirmApplyButton" type="button">确认采纳</button></div>
     </section>
   </div>
+  <div class="dialog-backdrop hidden" id="presetDialog" role="dialog" aria-modal="true" aria-labelledby="presetDialogTitle">
+    <section class="dialog compact">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="presetDialogTitle">新增方案</h2><p id="presetDialogDescription">保存当前配置，分析前可直接选择</p></div>
+        <button class="secondary icon-only" id="closePresetDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="preset-dialog-body"><label for="presetNameInput">方案名称</label><input id="presetNameInput" type="text" maxlength="40" autocomplete="off" placeholder="例如：Python 后端"></div>
+      <div class="dialog-actions"><button class="secondary" id="cancelPresetButton" type="button">取消</button><button id="confirmPresetButton" type="button">保存方案</button></div>
+    </section>
+  </div>
   <script>
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -1516,11 +1622,20 @@ def _html() -> str:
       diagnosticsOpen: false,
       runtimes: [],
       selectedRuntime: "",
-      repositorySettings: { language_mode: "auto", selected_languages: [], templates: {} },
+      repositorySettings: {
+        language_mode: "auto",
+        selected_languages: [],
+        templates: {},
+        language_presets: [],
+        template_presets: [],
+        active_language_preset: "auto",
+        active_template_preset: "auto"
+      },
       languageProfile: { detected_languages: [], template_recommendations: {} },
       settingsLanguages: [],
       templateLanguage: "python",
       settingsBusy: false,
+      presetDialogType: "",
       activeView: "current"
     };
     const repoPath = document.querySelector("#repoPath");
@@ -1540,6 +1655,8 @@ def _html() -> str:
     const severityFilters = document.querySelector("#severityFilters");
     const resultStream = document.querySelector("#resultStream");
     const resultsSummary = document.querySelector("#resultsSummary");
+    const expandAllButton = document.querySelector("#expandAllButton");
+    const collapseAllButton = document.querySelector("#collapseAllButton");
     const fullPatchButton = document.querySelector("#fullPatchButton");
     const fullPatchDialog = document.querySelector("#fullPatchDialog");
     const fullPatchPre = document.querySelector("#fullPatchPre");
@@ -1569,12 +1686,34 @@ def _html() -> str:
     const templateSupport = document.querySelector("#templateSupport");
     const useRecommendedTemplate = document.querySelector("#useRecommendedTemplate");
     const useBuiltinTemplate = document.querySelector("#useBuiltinTemplate");
+    const analysisLanguagePreset = document.querySelector("#analysisLanguagePreset");
+    const analysisTemplatePreset = document.querySelector("#analysisTemplatePreset");
+    const analysisLanguageSummary = document.querySelector("#analysisLanguageSummary");
+    const analysisTemplateSummary = document.querySelector("#analysisTemplateSummary");
+    const addLanguagePreset = document.querySelector("#addLanguagePreset");
+    const addTemplatePreset = document.querySelector("#addTemplatePreset");
+    const settingsLanguagePreset = document.querySelector("#settingsLanguagePreset");
+    const settingsTemplatePreset = document.querySelector("#settingsTemplatePreset");
+    const loadLanguagePreset = document.querySelector("#loadLanguagePreset");
+    const loadTemplatePreset = document.querySelector("#loadTemplatePreset");
+    const saveLanguagePreset = document.querySelector("#saveLanguagePreset");
+    const saveTemplatePreset = document.querySelector("#saveTemplatePreset");
+    const deleteLanguagePreset = document.querySelector("#deleteLanguagePreset");
+    const deleteTemplatePreset = document.querySelector("#deleteTemplatePreset");
+    const presetDialog = document.querySelector("#presetDialog");
+    const presetDialogTitle = document.querySelector("#presetDialogTitle");
+    const presetDialogDescription = document.querySelector("#presetDialogDescription");
+    const presetNameInput = document.querySelector("#presetNameInput");
+    const closePresetDialog = document.querySelector("#closePresetDialog");
+    const cancelPresetButton = document.querySelector("#cancelPresetButton");
+    const confirmPresetButton = document.querySelector("#confirmPresetButton");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
     browseButton.addEventListener("click", browseRepository);
     repoPath.addEventListener("keydown", event => {
       if (event.key === "Enter") startScan(repoPath.value);
     });
+    repoPath.addEventListener("change", () => loadRepositorySettings(repoPath.value, true));
     currentTab.addEventListener("click", () => showTab("current"));
     historyTab.addEventListener("click", () => showTab("history"));
     settingsTab.addEventListener("click", () => {
@@ -1586,6 +1725,27 @@ def _html() -> str:
       state.selectedRuntime = runtimeSelect.value;
       window.localStorage.setItem("logpilot.runtime", state.selectedRuntime);
       renderRuntimes();
+    });
+    analysisLanguagePreset.addEventListener("change", () => selectAnalysisPreset("language", analysisLanguagePreset.value));
+    analysisTemplatePreset.addEventListener("change", () => selectAnalysisPreset("template", analysisTemplatePreset.value));
+    addLanguagePreset.addEventListener("click", () => openPresetDialog("language"));
+    addTemplatePreset.addEventListener("click", () => openPresetDialog("template"));
+    loadLanguagePreset.addEventListener("click", () => loadSavedPreset("language", settingsLanguagePreset.value));
+    loadTemplatePreset.addEventListener("click", () => loadSavedPreset("template", settingsTemplatePreset.value));
+    saveLanguagePreset.addEventListener("click", () => openPresetDialog("language"));
+    saveTemplatePreset.addEventListener("click", () => openPresetDialog("template"));
+    deleteLanguagePreset.addEventListener("click", () => deleteSavedPreset("language", settingsLanguagePreset.value));
+    deleteTemplatePreset.addEventListener("click", () => deleteSavedPreset("template", settingsTemplatePreset.value));
+    settingsLanguagePreset.addEventListener("change", updatePresetLibraryActions);
+    settingsTemplatePreset.addEventListener("change", updatePresetLibraryActions);
+    closePresetDialog.addEventListener("click", closePresetEditor);
+    cancelPresetButton.addEventListener("click", closePresetEditor);
+    confirmPresetButton.addEventListener("click", createPreset);
+    presetNameInput.addEventListener("keydown", event => {
+      if (event.key === "Enter") createPreset();
+    });
+    presetDialog.addEventListener("click", event => {
+      if (event.target === presetDialog) closePresetEditor();
     });
     resultSearch.addEventListener("input", () => {
       state.searchQuery = resultSearch.value;
@@ -1599,6 +1759,8 @@ def _html() -> str:
     });
     resultStream.addEventListener("click", handleResultStreamClick);
     resultStream.addEventListener("change", handleResultStreamChange);
+    expandAllButton.addEventListener("click", () => setVisibleGroupsExpanded(true));
+    collapseAllButton.addEventListener("click", () => setVisibleGroupsExpanded(false));
     fullPatchButton.addEventListener("click", openFullPatch);
     closePatchDialog.addEventListener("click", closeFullPatch);
     fullPatchDialog.addEventListener("click", event => {
@@ -1624,6 +1786,7 @@ def _html() -> str:
       const button = event.target.closest("button[data-language-mode]");
       if (!button) return;
       state.repositorySettings.language_mode = button.dataset.languageMode;
+      state.repositorySettings.active_language_preset = "auto";
       if (button.dataset.languageMode === "custom" && !state.repositorySettings.selected_languages.length) {
         const detected = state.languageProfile.detected_languages.filter(item => item.recommended).map(item => item.id);
         state.repositorySettings.selected_languages = detected.length ? detected : ["python"];
@@ -1637,6 +1800,7 @@ def _html() -> str:
       if (input.checked) selected.add(input.dataset.languageId);
       else selected.delete(input.dataset.languageId);
       state.repositorySettings.selected_languages = [...selected];
+      state.repositorySettings.active_language_preset = "auto";
       renderRepositorySettings();
     });
     templateLanguageNav.addEventListener("click", event => {
@@ -1647,15 +1811,18 @@ def _html() -> str:
     });
     templateInput.addEventListener("input", () => {
       state.repositorySettings.templates[state.templateLanguage] = templateInput.value;
+      state.repositorySettings.active_template_preset = "auto";
       renderTemplateMeta();
     });
     useRecommendedTemplate.addEventListener("click", () => {
       const recommendation = templateRecommendation(state.templateLanguage);
       state.repositorySettings.templates[state.templateLanguage] = recommendation.template || languageDefinition(state.templateLanguage)?.builtin_template || "";
+      state.repositorySettings.active_template_preset = "auto";
       renderRepositorySettings();
     });
     useBuiltinTemplate.addEventListener("click", () => {
       state.repositorySettings.templates[state.templateLanguage] = languageDefinition(state.templateLanguage)?.builtin_template || "";
+      state.repositorySettings.active_template_preset = "auto";
       renderRepositorySettings();
     });
     applyDialog.addEventListener("click", event => {
@@ -1665,6 +1832,7 @@ def _html() -> str:
       if (event.key !== "Escape") return;
       if (!applyDialog.classList.contains("hidden")) closeApplyConfirmation();
       else if (!fullPatchDialog.classList.contains("hidden")) closeFullPatch();
+      else if (!presetDialog.classList.contains("hidden")) closePresetEditor();
     });
 
     async function init() {
@@ -1723,7 +1891,13 @@ def _html() -> str:
         const response = await fetch(`/api/settings?path=${encodeURIComponent(target)}`);
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "仓库设置读取失败");
-        state.repositorySettings = payload.settings || { language_mode: "auto", selected_languages: [], templates: {} };
+        state.repositorySettings = {
+          ...emptyRepositorySettings(),
+          ...(payload.settings || {}),
+          templates: { ...(payload.settings?.templates || {}) },
+          language_presets: [...(payload.settings?.language_presets || [])],
+          template_presets: [...(payload.settings?.template_presets || [])]
+        };
         state.languageProfile = payload.profile || { detected_languages: [], template_recommendations: {} };
         state.settingsLanguages = payload.languages || [];
         if (!state.settingsLanguages.some(item => item.id === state.templateLanguage)) {
@@ -1739,14 +1913,26 @@ def _html() -> str:
     }
 
     async function saveRepositorySettings() {
-      if (state.settingsBusy) return;
+      await persistRepositorySettings(false);
+    }
+
+    async function persistRepositorySettings(quiet = false) {
+      if (state.settingsBusy) {
+        if (!quiet) showToast("设置正在处理中，请稍候", "warning");
+        return false;
+      }
+      const target = repoPath.value.trim();
+      if (!target) {
+        showToast("请先输入或选择本地仓库路径", "warning");
+        return false;
+      }
       state.settingsBusy = true;
       updateSettingsBusy();
       try {
         const response = await fetch("/api/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: repoPath.value.trim(), settings: state.repositorySettings })
+          body: JSON.stringify({ path: target, settings: state.repositorySettings })
         });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "设置保存失败");
@@ -1754,9 +1940,11 @@ def _html() -> str:
         state.languageProfile = payload.profile || state.languageProfile;
         state.settingsLanguages = payload.languages || state.settingsLanguages;
         renderRepositorySettings(payload.repository);
-        showToast("仓库设置已保存", "success");
+        if (!quiet) showToast("仓库设置已保存", "success");
+        return true;
       } catch (error) {
         showToast(`保存失败：${error.message}`, "error");
+        return false;
       } finally {
         state.settingsBusy = false;
         updateSettingsBusy();
@@ -1828,6 +2016,7 @@ def _html() -> str:
         showToast("没有可用运行时，请先在运行时页面检查 Codex 或 Claude", "warning");
         return;
       }
+      if (!await persistRepositorySettings(true)) return;
       setScanning(true);
       showToast(`正在通过 ${runtime.name} 分析仓库...`, "info", 0);
       try {
@@ -2104,9 +2293,222 @@ def _html() -> str:
       updateRuntimeIndicator();
     }
 
+    function emptyRepositorySettings() {
+      return {
+        language_mode: "auto",
+        selected_languages: [],
+        templates: {},
+        language_presets: [],
+        template_presets: [],
+        active_language_preset: "auto",
+        active_template_preset: "auto"
+      };
+    }
+
+    function presetCollection(type) {
+      return type === "language"
+        ? state.repositorySettings.language_presets || []
+        : state.repositorySettings.template_presets || [];
+    }
+
+    function activePresetId(type) {
+      return type === "language"
+        ? state.repositorySettings.active_language_preset || "auto"
+        : state.repositorySettings.active_template_preset || "auto";
+    }
+
+    function resolvedLanguageIds() {
+      if (state.repositorySettings.language_mode === "custom" && state.repositorySettings.selected_languages.length) {
+        return [...state.repositorySettings.selected_languages];
+      }
+      const detected = (state.languageProfile.detected_languages || [])
+        .filter(item => item.recommended)
+        .map(item => item.id);
+      if (detected.length) return detected;
+      return state.settingsLanguages.some(item => item.id === "python")
+        ? ["python"]
+        : state.settingsLanguages.slice(0, 1).map(item => item.id);
+    }
+
+    async function selectAnalysisPreset(type, identifier) {
+      if (identifier === "current") return;
+      const previous = cloneRepositorySettings();
+      applyPreset(type, identifier);
+      renderRepositorySettings();
+      if (await persistRepositorySettings(true)) {
+        const selected = identifier === "auto"
+          ? (type === "language" ? "自动识别语言" : "自动匹配模板")
+          : presetCollection(type).find(item => item.id === identifier)?.name || "方案";
+        showToast(`已启用${selected}`, "success");
+      } else {
+        state.repositorySettings = previous;
+        renderRepositorySettings();
+      }
+    }
+
+    function applyPreset(type, identifier) {
+      if (type === "language") {
+        if (identifier === "auto") {
+          state.repositorySettings.language_mode = "auto";
+          state.repositorySettings.selected_languages = [];
+          state.repositorySettings.active_language_preset = "auto";
+          return;
+        }
+        const preset = presetCollection("language").find(item => item.id === identifier);
+        if (!preset) return;
+        state.repositorySettings.language_mode = "custom";
+        state.repositorySettings.selected_languages = [...preset.languages];
+        state.repositorySettings.active_language_preset = preset.id;
+        return;
+      }
+      if (identifier === "auto") {
+        state.repositorySettings.templates = {};
+        state.repositorySettings.active_template_preset = "auto";
+        return;
+      }
+      const preset = presetCollection("template").find(item => item.id === identifier);
+      if (!preset) return;
+      state.repositorySettings.templates = { ...preset.templates };
+      state.repositorySettings.active_template_preset = preset.id;
+    }
+
+    function openPresetDialog(type) {
+      if (!repoPath.value.trim()) {
+        showToast("请先输入或选择本地仓库路径", "warning");
+        return;
+      }
+      state.presetDialogType = type;
+      presetDialogTitle.textContent = type === "language" ? "新增语言方案" : "新增模板方案";
+      presetDialogDescription.textContent = type === "language"
+        ? "保存当前语言组合，后续分析可直接选择"
+        : "保存当前日志模板，后续分析可直接选择";
+      presetNameInput.value = "";
+      presetDialog.classList.remove("hidden");
+      setTimeout(() => presetNameInput.focus(), 0);
+    }
+
+    function closePresetEditor() {
+      presetDialog.classList.add("hidden");
+      state.presetDialogType = "";
+      presetNameInput.value = "";
+    }
+
+    async function createPreset() {
+      const type = state.presetDialogType;
+      const name = presetNameInput.value.trim();
+      if (!type || !name || name.length > 40) {
+        showToast("请输入方案名称", "warning");
+        return;
+      }
+      const previous = cloneRepositorySettings();
+      const identifier = `${type}-${Date.now()}`;
+      if (type === "language") {
+        const languages = resolvedLanguageIds();
+        if (!languages.length) {
+          showToast("当前没有可保存的语言", "warning");
+          return;
+        }
+        state.repositorySettings.language_presets.push({ id: identifier, name, languages });
+        applyPreset("language", identifier);
+      } else {
+        const templates = Object.fromEntries(
+          resolvedLanguageIds().map(language => [language, effectiveTemplate(language)]).filter(([, value]) => value)
+        );
+        if (!Object.keys(templates).length) {
+          showToast("当前没有可保存的模板", "warning");
+          return;
+        }
+        state.repositorySettings.template_presets.push({ id: identifier, name, templates });
+        applyPreset("template", identifier);
+      }
+      renderRepositorySettings();
+      if (await persistRepositorySettings(true)) {
+        closePresetEditor();
+        showToast(`方案“${name}”已保存`, "success");
+      } else {
+        state.repositorySettings = previous;
+        renderRepositorySettings();
+      }
+    }
+
+    async function loadSavedPreset(type, identifier) {
+      if (!identifier) return;
+      const previous = cloneRepositorySettings();
+      applyPreset(type, identifier);
+      renderRepositorySettings();
+      if (await persistRepositorySettings(true)) showToast("方案已载入", "success");
+      else {
+        state.repositorySettings = previous;
+        renderRepositorySettings();
+      }
+    }
+
+    async function deleteSavedPreset(type, identifier) {
+      if (!identifier) return;
+      const preset = presetCollection(type).find(item => item.id === identifier);
+      if (!preset) return;
+      const previous = cloneRepositorySettings();
+      const collectionKey = type === "language" ? "language_presets" : "template_presets";
+      state.repositorySettings[collectionKey] = presetCollection(type).filter(item => item.id !== identifier);
+      if (activePresetId(type) === identifier) applyPreset(type, "auto");
+      renderRepositorySettings();
+      if (await persistRepositorySettings(true)) showToast(`方案“${preset.name}”已删除`, "success");
+      else {
+        state.repositorySettings = previous;
+        renderRepositorySettings();
+      }
+    }
+
+    function cloneRepositorySettings() {
+      return JSON.parse(JSON.stringify(state.repositorySettings));
+    }
+
+    function renderPresetSelectors() {
+      const languagePresets = presetCollection("language");
+      const templatePresets = presetCollection("template");
+      const languageCustom = state.repositorySettings.language_mode === "custom"
+        && activePresetId("language") === "auto";
+      const templateCustom = Object.keys(state.repositorySettings.templates || {}).length > 0
+        && activePresetId("template") === "auto";
+      analysisLanguagePreset.innerHTML = [
+        '<option value="auto">自动识别</option>',
+        ...(languageCustom ? ['<option value="current">当前自定义</option>'] : []),
+        ...languagePresets.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`)
+      ].join("");
+      analysisTemplatePreset.innerHTML = [
+        '<option value="auto">自动匹配</option>',
+        ...(templateCustom ? ['<option value="current">当前自定义</option>'] : []),
+        ...templatePresets.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`)
+      ].join("");
+      analysisLanguagePreset.value = languageCustom ? "current" : activePresetId("language");
+      analysisTemplatePreset.value = templateCustom ? "current" : activePresetId("template");
+      const languageIds = resolvedLanguageIds();
+      analysisLanguageSummary.textContent = languageIds.map(id => languageDefinition(id)?.label || id).join("、") || "等待识别";
+      analysisTemplateSummary.textContent = templateCustom
+        ? `${Object.keys(state.repositorySettings.templates).length} 种自定义模板`
+        : activePresetId("template") === "auto" ? "优先沿用仓库日志风格" : "使用已保存模板";
+
+      settingsLanguagePreset.innerHTML = '<option value="">选择历史方案</option>'
+        + languagePresets.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("");
+      settingsTemplatePreset.innerHTML = '<option value="">选择历史方案</option>'
+        + templatePresets.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("");
+      settingsLanguagePreset.value = activePresetId("language") === "auto" ? "" : activePresetId("language");
+      settingsTemplatePreset.value = activePresetId("template") === "auto" ? "" : activePresetId("template");
+      updatePresetLibraryActions();
+    }
+
+    function updatePresetLibraryActions() {
+      loadLanguagePreset.disabled = state.settingsBusy || !settingsLanguagePreset.value;
+      deleteLanguagePreset.disabled = state.settingsBusy || !settingsLanguagePreset.value;
+      loadTemplatePreset.disabled = state.settingsBusy || !settingsTemplatePreset.value;
+      deleteTemplatePreset.disabled = state.settingsBusy || !settingsTemplatePreset.value;
+      saveLanguagePreset.disabled = state.settingsBusy;
+      saveTemplatePreset.disabled = state.settingsBusy;
+    }
+
     function renderRepositorySettings(path = repoPath.value) {
       document.querySelector("#settingsRepository").textContent = repositoryName(path);
-      const settings = state.repositorySettings || { language_mode: "auto", selected_languages: [], templates: {} };
+      const settings = state.repositorySettings || emptyRepositorySettings();
       languageMode.querySelectorAll("button[data-language-mode]").forEach(button => {
         button.classList.toggle("active", button.dataset.languageMode === settings.language_mode);
       });
@@ -2126,6 +2528,7 @@ def _html() -> str:
       `).join("");
       templateInput.value = effectiveTemplate(state.templateLanguage);
       renderTemplateMeta();
+      renderPresetSelectors();
       updateSettingsBusy();
     }
 
@@ -2141,7 +2544,12 @@ def _html() -> str:
     function updateSettingsBusy() {
       saveSettingsButton.disabled = state.settingsBusy;
       profileRepositoryButton.disabled = state.settingsBusy;
+      analysisLanguagePreset.disabled = state.settingsBusy;
+      analysisTemplatePreset.disabled = state.settingsBusy;
+      addLanguagePreset.disabled = state.settingsBusy;
+      addTemplatePreset.disabled = state.settingsBusy;
       saveSettingsButton.textContent = state.settingsBusy ? "处理中..." : "保存设置";
+      updatePresetLibraryActions();
     }
 
     function languageDefinition(languageId) {
@@ -2186,6 +2594,8 @@ def _html() -> str:
       resultsSummary.textContent = "等待分析结果";
       resultStream.innerHTML = '<div class="results-empty">选择仓库并开始分析</div>';
       fullPatchButton.disabled = true;
+      expandAllButton.disabled = true;
+      collapseAllButton.disabled = true;
       batchApplyButton.disabled = true;
       batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
@@ -2205,9 +2615,7 @@ def _html() -> str:
       resultSearch.value = "";
       fullPatchButton.disabled = true;
       renderMetrics(report.summary);
-      state.expandedGroups = new Set(
-        issueGroups().filter(group => group.primary.severity === "high").map(group => group.id)
-      );
+      state.expandedGroups = new Set(issueGroups().map(group => group.id));
       renderResultStream();
       renderDiagnostics();
     }
@@ -2278,6 +2686,9 @@ def _html() -> str:
         input.checked = applicable.length > 0 && selectedCount === applicable.length;
         input.indeterminate = selectedCount > 0 && selectedCount < applicable.length;
       });
+      const visibleGroups = files.flatMap(file => file.groups);
+      expandAllButton.disabled = !visibleGroups.length || visibleGroups.every(group => state.expandedGroups.has(group.id));
+      collapseAllButton.disabled = !visibleGroups.some(group => state.expandedGroups.has(group.id));
       renderBatchBar();
     }
 
@@ -2364,6 +2775,8 @@ def _html() -> str:
     function fileGroupMarkup(file) {
       const collapsed = state.collapsedFiles.has(file.path);
       const applicable = file.groups.filter(isGroupApplicable);
+      const allExpanded = file.groups.every(group => state.expandedGroups.has(group.id));
+      const anyExpanded = file.groups.some(group => state.expandedGroups.has(group.id));
       return `
         <section class="file-group ${collapsed ? "collapsed" : ""}" data-file-group="${esc(file.path)}">
           <div class="file-group-header">
@@ -2372,7 +2785,13 @@ def _html() -> str:
               <svg class="icon file-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/></svg>
               <span><span class="file-path">${esc(file.path)}</span><span class="file-count">${file.groups.length} 个问题位置 · ${applicable.length} 项可采纳</span></span>
             </button>
-            <label class="file-select" title="${applicable.length ? "选择该文件的全部精确修改" : "该文件没有精确修改"}"><input type="checkbox" data-file-check="${esc(file.path)}" ${applicable.length ? "" : "disabled"}>${applicable.length ? "选择可采纳项" : "无精确修改"}</label>
+            <div class="file-header-actions">
+              <div class="file-fold-actions" role="group" aria-label="${esc(file.path)} 批量展开与折叠">
+                <button class="secondary icon-only file-fold-button" type="button" data-file-expand-all="${esc(file.path)}" title="展开该文件全部问题" aria-label="展开该文件全部问题" ${allExpanded && !collapsed ? "disabled" : ""}><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 5 5 5-5"/><path d="m7 13 5 5 5-5"/></svg></button>
+                <button class="secondary icon-only file-fold-button" type="button" data-file-collapse-all="${esc(file.path)}" title="折叠该文件全部问题" aria-label="折叠该文件全部问题" ${!anyExpanded ? "disabled" : ""}><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 5-5 5 5"/><path d="m7 11 5-5 5 5"/></svg></button>
+              </div>
+              <label class="file-select" title="${applicable.length ? "选择该文件的全部精确修改" : "该文件没有精确修改"}"><input type="checkbox" data-file-check="${esc(file.path)}" ${applicable.length ? "" : "disabled"}>${applicable.length ? "选择可采纳项" : "无精确修改"}</label>
+            </div>
           </div>
           <div class="file-results">${file.groups.map(resultItemMarkup).join("")}</div>
         </section>`;
@@ -2466,6 +2885,16 @@ def _html() -> str:
     }
 
     function handleResultStreamClick(event) {
+      const fileExpand = event.target.closest("button[data-file-expand-all]");
+      if (fileExpand) {
+        setFileGroupsExpanded(fileExpand.dataset.fileExpandAll, true);
+        return;
+      }
+      const fileCollapse = event.target.closest("button[data-file-collapse-all]");
+      if (fileCollapse) {
+        setFileGroupsExpanded(fileCollapse.dataset.fileCollapseAll, false);
+        return;
+      }
       const fileToggle = event.target.closest("button[data-file-toggle]");
       if (fileToggle) {
         const path = fileToggle.dataset.fileToggle;
@@ -2487,6 +2916,27 @@ def _html() -> str:
         const group = issueGroups().find(item => item.id === applyButton.dataset.applyGroup);
         if (group) openApplyDialog(patchIssueIds(group));
       }
+    }
+
+    function setVisibleGroupsExpanded(expanded) {
+      const groups = visibleIssueGroups();
+      groups.forEach(group => {
+        if (expanded) state.expandedGroups.add(group.id);
+        else state.expandedGroups.delete(group.id);
+        if (expanded) state.collapsedFiles.delete(group.filePath);
+      });
+      renderResultStream();
+    }
+
+    function setFileGroupsExpanded(path, expanded) {
+      const file = groupedFiles().find(item => item.path === path);
+      if (!file) return;
+      file.groups.forEach(group => {
+        if (expanded) state.expandedGroups.add(group.id);
+        else state.expandedGroups.delete(group.id);
+      });
+      if (expanded) state.collapsedFiles.delete(path);
+      renderResultStream();
     }
 
     function handleResultStreamChange(event) {

@@ -195,10 +195,25 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("browseButton", html)
         self.assertIn("开始分析", html)
         self.assertIn('class="sidebar"', html)
-        self.assertIn("分析概览", html)
+        self.assertIn("仓库分析", html)
+        self.assertNotIn("分析概览", html)
+        self.assertIn('class="analysis-launch"', html)
+        self.assertNotIn('class="topbar"', html)
+        self.assertLess(html.index('id="currentPanel"'), html.index('class="analysis-launch"'))
+        self.assertIn('id="analysisLanguagePreset"', html)
+        self.assertIn('id="analysisTemplatePreset"', html)
+        self.assertIn('id="addLanguagePreset"', html)
+        self.assertIn('id="addTemplatePreset"', html)
         self.assertIn('id="resultSearch"', html)
         self.assertIn('id="severityFilters"', html)
         self.assertIn('id="resultStream"', html)
+        self.assertIn('id="expandAllButton"', html)
+        self.assertIn('id="collapseAllButton"', html)
+        self.assertIn('data-file-expand-all=', html)
+        self.assertIn('data-file-collapse-all=', html)
+        self.assertIn("state.expandedGroups = new Set(issueGroups().map", html)
+        self.assertIn("setVisibleGroupsExpanded", html)
+        self.assertIn("setFileGroupsExpanded", html)
         self.assertIn('id="batchBar"', html)
         self.assertIn("搜索文件、问题或规则", html)
         self.assertIn("按文件分组", html)
@@ -238,6 +253,11 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("分析诊断", html)
         self.assertIn('id="languageOptions"', html)
         self.assertIn('id="templateInput"', html)
+        self.assertIn('id="settingsLanguagePreset"', html)
+        self.assertIn('id="settingsTemplatePreset"', html)
+        self.assertIn('id="saveLanguagePreset"', html)
+        self.assertIn('id="saveTemplatePreset"', html)
+        self.assertIn('id="presetDialog"', html)
         self.assertIn("扫描并推荐", html)
         self.assertIn("支持自动补充", html)
         self.assertIn("issue.fix?.id", html)
@@ -411,6 +431,25 @@ class PipelineTests(unittest.TestCase):
                                 "language_mode": "custom",
                                 "selected_languages": ["python", "java"],
                                 "templates": {"python": 'logger.exception("{event}")'},
+                                "language_presets": [
+                                    {
+                                        "id": "backend-languages",
+                                        "name": "后端服务",
+                                        "languages": ["python", "java"],
+                                    }
+                                ],
+                                "template_presets": [
+                                    {
+                                        "id": "service-templates",
+                                        "name": "服务模板",
+                                        "templates": {
+                                            "python": 'logger.exception("{event}")',
+                                            "java": 'logger.error("{event}", {exception})',
+                                        },
+                                    }
+                                ],
+                                "active_language_preset": "backend-languages",
+                                "active_template_preset": "service-templates",
                             },
                         }
                     ).encode("utf-8"),
@@ -422,6 +461,10 @@ class PipelineTests(unittest.TestCase):
 
                 self.assertEqual(saved["settings"]["language_mode"], "custom")
                 self.assertEqual(saved["settings"]["selected_languages"], ["python", "java"])
+                self.assertEqual(saved["settings"]["language_presets"][0]["name"], "后端服务")
+                self.assertEqual(saved["settings"]["template_presets"][0]["name"], "服务模板")
+                self.assertEqual(saved["settings"]["active_language_preset"], "backend-languages")
+                self.assertEqual(saved["settings"]["active_template_preset"], "service-templates")
                 self.assertTrue((repository_data_dir(repo) / "settings.json").is_file())
                 self.assertTrue((repository_data_dir(repo) / "language-profile.json").is_file())
                 self.assertFalse((repo / ".logpilot").exists())

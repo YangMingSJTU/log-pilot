@@ -37,6 +37,10 @@ class RepositorySettings:
     language_mode: str = "auto"
     selected_languages: list[str] = field(default_factory=list)
     templates: dict[str, str] = field(default_factory=dict)
+    language_presets: list[dict[str, Any]] = field(default_factory=list)
+    template_presets: list[dict[str, Any]] = field(default_factory=list)
+    active_language_preset: str = "auto"
+    active_template_preset: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -94,7 +98,104 @@ def normalize_settings(payload: dict[str, Any]) -> RepositorySettings:
         if key not in LANGUAGE_LABELS or not str(value).strip():
             continue
         templates[key] = validate_template(str(value))
-    return RepositorySettings(mode, selected, templates)
+
+    language_presets = _normalize_language_presets(payload.get("language_presets", []))
+    template_presets = _normalize_template_presets(payload.get("template_presets", []))
+    active_language_preset = _normalize_active_preset(
+        payload.get("active_language_preset", "auto"),
+        language_presets,
+    )
+    active_template_preset = _normalize_active_preset(
+        payload.get("active_template_preset", "auto"),
+        template_presets,
+    )
+    return RepositorySettings(
+        language_mode=mode,
+        selected_languages=selected,
+        templates=templates,
+        language_presets=language_presets,
+        template_presets=template_presets,
+        active_language_preset=active_language_preset,
+        active_template_preset=active_template_preset,
+    )
+
+
+def _normalize_language_presets(raw_presets: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_presets, list):
+        raise SettingsError("语言方案必须是列表。")
+    presets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_presets[:50]:
+        if not isinstance(item, dict):
+            continue
+        identifier = _normalize_preset_id(item.get("id"))
+        if identifier in seen:
+            continue
+        name = _normalize_preset_name(item.get("name"))
+        raw_languages = item.get("languages", [])
+        if not isinstance(raw_languages, list):
+            raise SettingsError("语言方案内容必须是列表。")
+        languages = list(
+            dict.fromkeys(
+                str(language).lower()
+                for language in raw_languages
+                if str(language).lower() in LANGUAGE_LABELS
+            )
+        )
+        if not languages:
+            raise SettingsError(f"语言方案“{name}”至少需要一种语言。")
+        presets.append({"id": identifier, "name": name, "languages": languages})
+        seen.add(identifier)
+    return presets
+
+
+def _normalize_template_presets(raw_presets: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_presets, list):
+        raise SettingsError("模板方案必须是列表。")
+    presets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_presets[:50]:
+        if not isinstance(item, dict):
+            continue
+        identifier = _normalize_preset_id(item.get("id"))
+        if identifier in seen:
+            continue
+        name = _normalize_preset_name(item.get("name"))
+        raw_templates = item.get("templates", {})
+        if not isinstance(raw_templates, dict):
+            raise SettingsError("模板方案内容必须是对象。")
+        templates: dict[str, str] = {}
+        for language, value in raw_templates.items():
+            key = str(language).lower()
+            if key in LANGUAGE_LABELS and str(value).strip():
+                templates[key] = validate_template(str(value))
+        if not templates:
+            raise SettingsError(f"模板方案“{name}”至少需要一个模板。")
+        presets.append({"id": identifier, "name": name, "templates": templates})
+        seen.add(identifier)
+    return presets
+
+
+def _normalize_preset_id(value: Any) -> str:
+    identifier = str(value or "").strip()
+    safe = identifier.replace("-", "").replace("_", "")
+    if not identifier or len(identifier) > 80 or not safe.isalnum():
+        raise SettingsError("方案标识格式无效。")
+    return identifier
+
+
+def _normalize_preset_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name or len(name) > 40:
+        raise SettingsError("方案名称必须是 1 到 40 个字符。")
+    return name
+
+
+def _normalize_active_preset(value: Any, presets: list[dict[str, Any]]) -> str:
+    identifier = str(value or "auto").strip()
+    if identifier == "auto" or any(item["id"] == identifier for item in presets):
+        return identifier
+    return "auto"
 
 
 def validate_template(template: str) -> str:
