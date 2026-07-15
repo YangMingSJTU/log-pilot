@@ -21,11 +21,16 @@ LOW_VALUE_MESSAGES = {
 }
 
 
-def analyze_rules(repo_root: Path, logs: list[LogCall], config: RulesConfig) -> list[Issue]:
+def analyze_rules(
+    repo_root: Path,
+    logs: list[LogCall],
+    config: RulesConfig,
+    enabled_languages: set[str] | None = None,
+) -> list[Issue]:
     issues: list[Issue] = []
     issues.extend(_log_call_issues(logs, config))
     issues.extend(_duplicate_issues(logs))
-    issues.extend(_missing_exception_logs(repo_root))
+    issues.extend(_missing_exception_logs(repo_root, enabled_languages))
     return issues
 
 
@@ -129,8 +134,10 @@ def _duplicate_issues(logs: list[LogCall]) -> list[Issue]:
     return issues
 
 
-def _missing_exception_logs(repo_root: Path) -> list[Issue]:
+def _missing_exception_logs(repo_root: Path, enabled_languages: set[str] | None = None) -> list[Issue]:
     issues: list[Issue] = []
+    if enabled_languages is not None and "python" not in enabled_languages:
+        return _missing_exception_logs_text(repo_root, enabled_languages)
     for path in repo_root.rglob("*.py"):
         parts = set(path.relative_to(repo_root).parts)
         if {".git", ".venv", "venv", "__pycache__"}.intersection(parts):
@@ -164,14 +171,17 @@ def _missing_exception_logs(repo_root: Path) -> list[Issue]:
                     source_line=lines[node.lineno - 1] if node.lineno <= len(lines) else "",
                 )
             )
-    issues.extend(_missing_exception_logs_text(repo_root))
+    issues.extend(_missing_exception_logs_text(repo_root, enabled_languages))
     return issues
 
 
-def _missing_exception_logs_text(repo_root: Path) -> list[Issue]:
+def _missing_exception_logs_text(repo_root: Path, enabled_languages: set[str] | None = None) -> list[Issue]:
     issues: list[Issue] = []
     pattern = re.compile(r"\bcatch\s*\([^)]*\)\s*\{(?P<body>[^{}]*)\}", re.DOTALL)
     for path in list(repo_root.rglob("*.js")) + list(repo_root.rglob("*.ts")) + list(repo_root.rglob("*.java")):
+        language = {".js": "javascript", ".ts": "typescript", ".java": "java"}.get(path.suffix.lower())
+        if enabled_languages is not None and language not in enabled_languages:
+            continue
         parts = set(path.relative_to(repo_root).parts)
         if {".git", ".venv", "venv", "node_modules", "dist", "build"}.intersection(parts):
             continue

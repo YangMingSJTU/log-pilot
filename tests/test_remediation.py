@@ -27,6 +27,7 @@ from logpilot.remediation import (
 )
 import logpilot.remediation as remediation_module
 from logpilot.storage import DATA_DIR_ENV, repository_data_dir, repository_id
+from logpilot.settings import save_repository_settings
 
 
 class RemediationTests(unittest.TestCase):
@@ -205,6 +206,119 @@ class RemediationTests(unittest.TestCase):
             self.assertIn("Applied:", output.getvalue())
             self.assertIn("Rolled back:", output.getvalue())
             self.assertEqual(source.read_text(encoding="utf-8"), "print('debug')\n")
+
+    def test_missing_exception_pass_uses_fixed_template_and_can_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            source = repo / "service.py"
+            original = "\n".join(
+                [
+                    "import logging",
+                    "logger = logging.getLogger(__name__)",
+                    "def charge():",
+                    "    try:",
+                    "        return gateway.charge()",
+                    "    except Exception:",
+                    "        pass",
+                    "",
+                ]
+            )
+            source.write_text(original, encoding="utf-8")
+            save_repository_settings(
+                repo,
+                {
+                    "language_mode": "custom",
+                    "selected_languages": ["python"],
+                    "templates": {"python": 'logger.error("{event}", exc_info=True)'},
+                },
+            )
+
+            report = run_scan(repo)
+            issue = next(item for item in report.issues if item.kind == "missing_exception_log")
+
+            self.assertIsNotNone(issue.fix)
+            self.assertEqual(issue.fix.action, "replace")
+            self.assertEqual(issue.fix.source, "fixed")
+            self.assertIn('+        logger.error("charge_failed", exc_info=True)', (repository_data_dir(repo) / "changes.diff").read_text(encoding="utf-8"))
+
+            run_id = list_history_runs(repository_data_dir(repo))[0]["run_id"]
+            record = apply_suggestions(repo, run_id, [issue.id])
+            self.assertIn('logger.error("charge_failed", exc_info=True)', source.read_text(encoding="utf-8"))
+            rollback_apply(repo, record["apply_id"])
+            self.assertEqual(source.read_text(encoding="utf-8"), original)
+
+    def test_missing_exception_fix_inserts_before_existing_handler_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            source = repo / "service.py"
+            source.write_text(
+                "import logging\nlogger = logging.getLogger(__name__)\ndef run():\n    try:\n        work()\n    except Exception:\n        cleanup()\n",
+                encoding="utf-8",
+            )
+
+            report = run_scan(repo)
+            issue = next(item for item in report.issues if item.kind == "missing_exception_log")
+
+            self.assertIsNotNone(issue.fix)
+            self.assertEqual(issue.fix.action, "insert_before")
+            run_id = list_history_runs(repository_data_dir(repo))[0]["run_id"]
+            apply_suggestions(repo, run_id, [issue.id])
+            changed = source.read_text(encoding="utf-8")
+            self.assertLess(changed.index('logger.exception("run_failed")'), changed.index("cleanup()"))
+
+    def test_missing_exception_without_resolvable_logger_remains_review_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.py").write_text(
+                "def run():\n    try:\n        work()\n    except Exception:\n        pass\n",
+                encoding="utf-8",
+            )
+
+            report = run_scan(repo)
+            issue = next(item for item in report.issues if item.kind == "missing_exception_log")
+
+            self.assertIsNone(issue.fix)
+
+    def test_fixed_template_with_unknown_logger_remains_review_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.py").write_text(
+                "import logging\napp_logger = logging.getLogger(__name__)\ndef run():\n    try:\n        work()\n    except Exception:\n        pass\n",
+                encoding="utf-8",
+            )
+            save_repository_settings(
+                repo,
+                {
+                    "language_mode": "auto",
+                    "selected_languages": [],
+                    "templates": {"python": 'missing_logger.exception("{event}")'},
+                },
+            )
+
+            report = run_scan(repo)
+            issue = next(item for item in report.issues if item.kind == "missing_exception_log")
+
+            self.assertIsNone(issue.fix)
+
+    def test_batch_apply_combines_delete_and_added_log_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            source = repo / "service.py"
+            original = "import logging\nlogger = logging.getLogger(__name__)\ndef run():\n    print('debug')\n    try:\n        work()\n    except Exception:\n        pass\n"
+            source.write_text(original, encoding="utf-8")
+            report = run_scan(repo)
+            delete_issue = next(item for item in report.issues if item.patch_action == "delete")
+            add_issue = next(item for item in report.issues if item.kind == "missing_exception_log")
+            run_id = list_history_runs(repository_data_dir(repo))[0]["run_id"]
+
+            record = apply_suggestions(repo, run_id, [delete_issue.id, add_issue.id])
+
+            changed = source.read_text(encoding="utf-8")
+            self.assertNotIn("print('debug')", changed)
+            self.assertIn('logger.exception("run_failed")', changed)
+            self.assertEqual({edit["action"] for edit in record["operations"][0]["edits"]}, {"delete", "replace"})
+            rollback_apply(repo, record["apply_id"])
+            self.assertEqual(source.read_text(encoding="utf-8"), original)
 
 
 if __name__ == "__main__":

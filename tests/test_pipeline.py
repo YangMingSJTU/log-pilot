@@ -20,6 +20,7 @@ from logpilot.history import list_history_runs, load_history_run
 from logpilot.locking import repository_operation_lock
 from logpilot.pipeline import run_scan
 from logpilot.runtime import RuntimeExecution, RuntimeInfo
+from logpilot.settings import save_repository_settings
 from logpilot.storage import DATA_DIR_ENV, repository_data_dir
 import logpilot.web as web_module
 from logpilot.web import _html, build_server
@@ -164,6 +165,29 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(config.rules.forbidden_logs, ["print", "console.log"])
             self.assertIn("vendor", config.scan.exclude)
 
+    def test_custom_language_selection_limits_scanned_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.py").write_text("print('python')\n", encoding="utf-8")
+            (repo / "Worker.java").write_text(
+                'class Worker { void run() { System.out.println("java"); } }\n',
+                encoding="utf-8",
+            )
+            save_repository_settings(
+                repo,
+                {
+                    "language_mode": "custom",
+                    "selected_languages": ["java"],
+                    "templates": {},
+                },
+            )
+
+            report = run_scan(repo)
+
+            self.assertEqual(report.summary.files_scanned, 1)
+            self.assertTrue(report.logs)
+            self.assertEqual({log.language for log in report.logs}, {"java"})
+
     def test_web_shell_contains_analysis_controls(self) -> None:
         html = _html()
         self.assertIn("LogPilot 本地分析工作台", html)
@@ -201,12 +225,22 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("/api/runtimes", html)
         self.assertIn("相关代码", html)
         self.assertIn("修改预览", html)
+        self.assertIn('class="risk-panel"', html)
+        self.assertIn('class="diff-line ${type}"', html)
+        self.assertIn('type = "add"', html)
+        self.assertIn('type = "remove"', html)
+        self.assertIn("codeContextMarkup", html)
         self.assertIn("完整修改", html)
         self.assertIn("批量采纳", html)
         self.assertIn("采纳此修改", html)
         self.assertIn("撤销上次采纳", html)
         self.assertIn("/api/apply", html)
         self.assertIn("分析诊断", html)
+        self.assertIn('id="languageOptions"', html)
+        self.assertIn('id="templateInput"', html)
+        self.assertIn("扫描并推荐", html)
+        self.assertIn("支持自动补充", html)
+        self.assertIn("issue.fix?.id", html)
         self.assertNotIn('id="logsTab"', html)
         self.assertNotIn('id="aiTab"', html)
         self.assertNotIn("issueDetail", html)
@@ -334,6 +368,63 @@ class PipelineTests(unittest.TestCase):
                         urllib.request.urlopen(request, timeout=10)
                 self.assertEqual(raised.exception.code, 409)
                 raised.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_web_repository_settings_profile_and_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.py").write_text(
+                "import logging\nlogger = logging.getLogger(__name__)\nlogger.exception('failed')\n",
+                encoding="utf-8",
+            )
+            (repo / "Worker.java").write_text("class Worker {}\n", encoding="utf-8")
+            server = build_server(repo, port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                profile_request = urllib.request.Request(
+                    f"http://{host}:{port}/api/settings/profile",
+                    data=json.dumps({"path": str(repo)}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(profile_request, timeout=10) as response:
+                    profile_payload = json.loads(response.read().decode("utf-8"))
+
+                detected = {item["id"]: item for item in profile_payload["profile"]["detected_languages"]}
+                self.assertEqual(detected["python"]["file_count"], 1)
+                self.assertEqual(detected["java"]["file_count"], 1)
+                self.assertEqual(
+                    profile_payload["profile"]["template_recommendations"]["python"]["source"],
+                    "repository",
+                )
+
+                save_request = urllib.request.Request(
+                    f"http://{host}:{port}/api/settings",
+                    data=json.dumps(
+                        {
+                            "path": str(repo),
+                            "settings": {
+                                "language_mode": "custom",
+                                "selected_languages": ["python", "java"],
+                                "templates": {"python": 'logger.exception("{event}")'},
+                            },
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(save_request, timeout=10) as response:
+                    saved = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(saved["settings"]["language_mode"], "custom")
+                self.assertEqual(saved["settings"]["selected_languages"], ["python", "java"])
+                self.assertTrue((repository_data_dir(repo) / "settings.json").is_file())
+                self.assertTrue((repository_data_dir(repo) / "language-profile.json").is_file())
+                self.assertFalse((repo / ".logpilot").exists())
             finally:
                 server.shutdown()
                 server.server_close()

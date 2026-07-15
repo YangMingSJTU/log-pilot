@@ -29,6 +29,23 @@ class LogCall:
 
 
 @dataclass(slots=True)
+class FixProposal:
+    id: str
+    action: str
+    file_path: str
+    start_line: int
+    end_line: int
+    expected_text: str
+    replacement_text: str
+    context: str
+    description: str
+    source: str
+    line_delta: int
+    issue_ids: list[str] = field(default_factory=list)
+    log_call_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Issue:
     id: str
     file_path: str
@@ -43,6 +60,7 @@ class Issue:
     patch_action: str | None = None
     context: str = ""
     source_line: str = ""
+    fix: FixProposal | None = None
 
 
 @dataclass(slots=True)
@@ -87,6 +105,7 @@ class PatchOperation:
     before_sha256: str = ""
     after_sha256: str = ""
     backup_file: str = ""
+    edits: list[FixProposal] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

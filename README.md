@@ -29,9 +29,11 @@ The selected repository is not used for generated artifacts. Reports, history, p
 
 Set `LOGPILOT_DATA_DIR` to override the root directory for tests or isolated environments. A repository may still contain a user-maintained `.logpilot.yaml` scan configuration; LogPilot never creates it.
 
-The workbench groups findings by file in a single vertical result stream. Search and severity filters narrow the stream, high-risk findings open by default, and each expanded item keeps its reason, source context, and exact diff together. Exact deletion patches can be selected per item or per file and applied as one checked batch.
+The workbench groups findings by file in a single vertical result stream. Search and severity filters narrow the stream, high-risk findings open by default, and each expanded item keeps its reason, source context, and exact diff together. Exact deletions, replacements, and insertions can be selected per item or per file and applied as one checked batch.
 
-Every apply validates the saved source context, stores a backup under `applies/<apply_id>/`, and can roll back the latest unchanged transaction. Text-only AI suggestions remain review-only.
+Repository settings can automatically detect Python, Java, JavaScript, and TypeScript, or restrict scans to a fixed multi-language selection. Log templates are resolved in this order: user-fixed template, repository style recommendation, then the built-in safe template. Python exception handlers can currently receive validated automatic log insertions; other languages remain analysis-only until parser-backed insertion support is added.
+
+Every apply validates the saved source context, stores a backup under `applies/<apply_id>/`, and can roll back the latest unchanged transaction. Repository settings and language profiles are stored beside these artifacts in the user data directory. Text-only AI suggestions remain review-only.
 
 ## Development
 

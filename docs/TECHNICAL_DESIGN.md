@@ -31,8 +31,10 @@ flowchart LR
 - `ai` 构建批量日志 Prompt，校验结构化返回并转换为问题；配置默认关闭，UI 显式选择运行时后启用。
 - `reporting` 输出最新 `report.json` 和 `report.md`。
 - `storage` 按仓库规范化路径的 SHA-256 将产物隔离到用户应用数据目录。
+- `settings` 保存仓库级语言选择与固定日志模板，并根据文件及现有日志生成语言画像和模板推荐。
+- `fixes` 将规则问题转换为统一的删除、替换或插入修复；Python 异常日志会在 AST 语法校验通过后才成为可采纳项。
 - `history` 将每次扫描保存到 `repositories/<repository_id>/runs/<run_id>/`。
-- `patching` 生成可审查 Diff，`remediation` 负责精确校验、原子采纳、备份和回滚。
+- `patching` 根据统一修复模型生成可审查 Diff，`remediation` 负责精确校验、跨文件原子采纳、备份和回滚。
 - `web` 提供目录与运行时选择、一键扫描和历史记录，并以按文件分组的纵向结果流就地展示原因、源码与 Diff，支持单项或文件级批量采纳及回滚。
 
 ## 运行时安全边界
@@ -42,6 +44,7 @@ flowchart LR
 - 单次扫描批量提交日志并设置超时，返回值必须符合预设 JSON Schema。
 - 可通过 `LOGPILOT_CODEX_PATH`、`LOGPILOT_CLAUDE_PATH` 固定可执行文件路径。
 - 扫描不写入目标仓库；`.logpilot.yaml` 仅作为可选的用户配置读取。
+- 语言选择、模板与仓库风格画像保存在用户数据目录；模板按“用户固定、仓库推荐、内置安全模板”顺序解析。
 - 采纳前校验原始行及上下文，事务备份统一保存在用户目录，源码变化时拒绝写入或回滚。
 
 ## MVP 约束

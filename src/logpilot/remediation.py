@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -10,9 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .fixes import apply_fix_to_text, fix_from_dict
 from .history import list_history_runs, load_history_run
 from .locking import repository_operation_lock
-from .models import ApplyRecord, PatchOperation
+from .models import ApplyRecord, FixProposal, PatchOperation
 from .storage import initialize_repository_storage, repository_data_dir
 
 
@@ -39,23 +41,24 @@ class _PreparedFile:
 
 def applicable_issue_groups(report: dict[str, Any]) -> list[dict[str, Any]]:
     issues = report.get("issues", []) if isinstance(report, dict) else []
-    logs = report.get("logs", []) if isinstance(report, dict) else []
-    logs_by_id = {str(log.get("id")): log for log in logs if isinstance(log, dict)}
     grouped: dict[str, dict[str, Any]] = {}
     for issue in issues:
-        if not isinstance(issue, dict) or issue.get("patch_action") != "delete":
+        if not isinstance(issue, dict) or not isinstance(issue.get("fix"), dict):
             continue
-        log_id = str(issue.get("log_call_id") or "")
-        log = logs_by_id.get(log_id)
-        if not log:
+        fix = issue["fix"]
+        fix_id = str(fix.get("id") or "")
+        if not fix_id:
             continue
         group = grouped.setdefault(
-            log_id,
+            fix_id,
             {
-                "log_call_id": log_id,
-                "file_path": str(log.get("file_path", "")),
-                "line": int(log.get("line", 0)),
-                "source_line": str(log.get("source_line", "")),
+                "fix_id": fix_id,
+                "action": str(fix.get("action", "")),
+                "description": str(fix.get("description", "")),
+                "source": str(fix.get("source", "")),
+                "file_path": str(fix.get("file_path", "")),
+                "line": int(fix.get("start_line", 0)),
+                "source_line": str(fix.get("expected_text", "")),
                 "issue_ids": [],
                 "titles": [],
             },
@@ -74,8 +77,15 @@ def apply_suggestions(repo_root: Path, run_id: str, issue_ids: list[str]) -> dic
             run = load_history_run(data_dir, resolved_run_id)
         except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
             raise ApplyNotFoundError(str(exc)) from exc
-        known_deletions = _known_deletions(data_dir, resolved_run_id)
-        prepared, affected_issue_ids = _prepare_changes(repo_root, run["report"], issue_ids, known_deletions)
+        known_edits = _known_edits(data_dir, resolved_run_id)
+        applied_issue_ids = _active_issue_ids(data_dir, resolved_run_id)
+        prepared, affected_issue_ids = _prepare_changes(
+            repo_root,
+            run["report"],
+            issue_ids,
+            known_edits,
+            applied_issue_ids,
+        )
         record = _commit_apply(repo_root, data_dir, resolved_run_id, prepared, affected_issue_ids)
         return record.to_dict()
 
@@ -145,7 +155,8 @@ def _prepare_changes(
     repo_root: Path,
     report: dict[str, Any],
     requested_issue_ids: list[str],
-    known_deletions: dict[str, set[int]] | None = None,
+    known_edits: dict[str, list[dict[str, Any]]] | None = None,
+    applied_issue_ids: set[str] | None = None,
 ) -> tuple[list[_PreparedFile], list[str]]:
     requested = {issue_id for issue_id in requested_issue_ids if issue_id}
     if not requested:
@@ -156,41 +167,39 @@ def _prepare_changes(
     missing = sorted(requested.difference(issues_by_id))
     if missing:
         raise ApplyNotFoundError(f"分析结果中不存在问题：{', '.join(missing)}")
+    already_applied = sorted(requested.intersection(applied_issue_ids or set()))
+    if already_applied:
+        raise ApplyConflictError(f"问题已经采纳：{', '.join(already_applied)}")
 
-    selected_log_ids: set[str] = set()
+    selected_fixes: dict[str, FixProposal] = {}
     for issue_id in requested:
         issue = issues_by_id[issue_id]
-        if issue.get("patch_action") != "delete" or not issue.get("log_call_id"):
+        raw_fix = issue.get("fix")
+        if not isinstance(raw_fix, dict):
             raise RemediationError(f"问题不支持自动采纳：{issue_id}")
-        selected_log_ids.add(str(issue["log_call_id"]))
+        fix = fix_from_dict(raw_fix)
+        if not fix.id or not fix.file_path or fix.start_line < 1:
+            raise RemediationError(f"问题的修复信息无效：{issue_id}")
+        selected_fixes[fix.id] = fix
 
-    logs = [log for log in report.get("logs", []) if isinstance(log, dict)]
-    logs_by_id = {str(log.get("id")): log for log in logs}
-    operations_by_file: dict[str, PatchOperation] = {}
-    for log_id in sorted(selected_log_ids):
-        log = logs_by_id.get(log_id)
-        if not log:
-            raise ApplyNotFoundError(f"分析结果缺少日志快照：{log_id}")
-        rel_path = str(log.get("file_path", ""))
-        line_number = int(log.get("line", 0))
-        if not rel_path or line_number < 1:
-            raise RemediationError(f"日志位置无效：{log_id}")
-        operation = operations_by_file.setdefault(rel_path, PatchOperation(rel_path, [], [], []))
-        if line_number not in operation.line_numbers:
-            operation.line_numbers.append(line_number)
-        operation.log_call_ids.append(log_id)
-
+    selected_fix_ids = set(selected_fixes)
     affected_issue_ids = sorted(
         str(issue.get("id"))
         for issue in issues
-        if str(issue.get("log_call_id") or "") in selected_log_ids
+        if isinstance(issue.get("fix"), dict)
+        and str(issue["fix"].get("id", "")) in selected_fix_ids
     )
+    operations_by_file: dict[str, PatchOperation] = {}
+    for fix in selected_fixes.values():
+        operation = operations_by_file.setdefault(fix.file_path, PatchOperation(fix.file_path, [], [], []))
+        operation.edits.append(fix)
+        operation.line_numbers.append(fix.start_line)
+        operation.log_call_ids.extend(fix.log_call_ids)
+        operation.issue_ids.extend(fix.issue_ids)
     for operation in operations_by_file.values():
-        operation.issue_ids = [
-            str(issue.get("id"))
-            for issue in issues
-            if str(issue.get("log_call_id") or "") in operation.log_call_ids
-        ]
+        operation.line_numbers = sorted(set(operation.line_numbers))
+        operation.log_call_ids = sorted(set(operation.log_call_ids))
+        operation.issue_ids = sorted(set(operation.issue_ids))
 
     prepared: list[_PreparedFile] = []
     for operation in sorted(operations_by_file.values(), key=lambda item: item.file_path):
@@ -203,15 +212,24 @@ def _prepare_changes(
         except UnicodeDecodeError as exc:
             raise ApplyConflictError(f"目标文件不是 UTF-8 编码：{operation.file_path}") from exc
         lines = text.splitlines(keepends=True)
-        previous_lines = (known_deletions or {}).get(operation.file_path, set())
+        previous_edits = (known_edits or {}).get(operation.file_path, [])
         current_line_numbers: list[int] = []
-        for line_number in operation.line_numbers:
-            if line_number in previous_lines:
-                raise ApplyConflictError(f"该日志已经采纳：{operation.file_path}:{line_number}")
-            log = next(logs_by_id[log_id] for log_id in operation.log_call_ids if int(logs_by_id[log_id]["line"]) == line_number)
-            current_line_numbers.append(_validate_snapshot(operation.file_path, lines, log, previous_lines))
-        deleted = set(current_line_numbers)
-        after_text = "".join(line for number, line in enumerate(lines, start=1) if number not in deleted)
+        current_positions: dict[str, int] = {}
+        for fix in operation.edits:
+            current_line = _validate_snapshot(operation.file_path, lines, fix, previous_edits)
+            current_line_numbers.append(current_line)
+            current_positions[fix.id] = current_line
+        after_text = text
+        try:
+            for fix in sorted(operation.edits, key=lambda item: current_positions[item.id], reverse=True):
+                after_text = apply_fix_to_text(after_text, fix, current_positions[fix.id])
+        except ValueError as exc:
+            raise ApplyConflictError(f"源码已变化，请重新分析：{operation.file_path}") from exc
+        if operation.file_path.endswith(".py") and any(fix.action != "delete" for fix in operation.edits):
+            try:
+                ast.parse(after_text)
+            except SyntaxError as exc:
+                raise RemediationError(f"采纳后 Python 语法无效：{operation.file_path}:{exc.lineno}") from exc
         after = after_text.encode("utf-8")
         operation.line_numbers.sort()
         operation.before_sha256 = _sha256(before)
@@ -223,21 +241,22 @@ def _prepare_changes(
 def _validate_snapshot(
     file_path: str,
     lines: list[str],
-    log: dict[str, Any],
-    known_deletions: set[int],
+    fix: FixProposal,
+    known_edits: list[dict[str, Any]],
 ) -> int:
-    line_number = int(log.get("line", 0))
-    current_line_number = _current_line_number(line_number, known_deletions)
-    if current_line_number > len(lines):
+    line_number = fix.start_line
+    current_line_number = _current_line_number(line_number, known_edits)
+    current_end = current_line_number + (fix.end_line - fix.start_line)
+    if current_line_number < 1 or current_end > len(lines):
         raise ApplyConflictError(f"源码已变化，请重新分析：{file_path}:{line_number}")
-    current_line = lines[current_line_number - 1].rstrip("\r\n")
-    if current_line != str(log.get("source_line", "")):
+    current_text = "\n".join(line.rstrip("\r\n") for line in lines[current_line_number - 1 : current_end])
+    if current_text != fix.expected_text:
         raise ApplyConflictError(f"源码已变化，请重新分析：{file_path}:{line_number}")
 
-    for context_line, expected in _parse_context(str(log.get("context", ""))).items():
-        if context_line in known_deletions:
+    for context_line, expected in _parse_context(fix.context).items():
+        if _context_was_replaced(context_line, known_edits):
             continue
-        current_context_line = _current_line_number(context_line, known_deletions)
+        current_context_line = _current_line_number(context_line, known_edits)
         if current_context_line < 1 or current_context_line > len(lines):
             raise ApplyConflictError(f"源码上下文已变化，请重新分析：{file_path}:{line_number}")
         if lines[current_context_line - 1].rstrip("\r\n") != expected:
@@ -245,12 +264,16 @@ def _validate_snapshot(
     return current_line_number
 
 
-def _current_line_number(original_line: int, known_deletions: set[int]) -> int:
-    return original_line - sum(1 for deleted_line in known_deletions if deleted_line < original_line)
+def _current_line_number(original_line: int, known_edits: list[dict[str, Any]]) -> int:
+    return original_line + sum(
+        int(edit.get("line_delta", 0))
+        for edit in known_edits
+        if int(edit.get("start_line", 0)) < original_line
+    )
 
 
-def _known_deletions(data_dir: Path, run_id: str) -> dict[str, set[int]]:
-    known: dict[str, set[int]] = {}
+def _known_edits(data_dir: Path, run_id: str) -> dict[str, list[dict[str, Any]]]:
+    known: dict[str, list[dict[str, Any]]] = {}
     for record in list_apply_records(data_dir):
         if record.get("run_id") != run_id or record.get("status") != "applied":
             continue
@@ -258,8 +281,38 @@ def _known_deletions(data_dir: Path, run_id: str) -> dict[str, set[int]]:
             if not isinstance(operation, dict):
                 continue
             rel_path = str(operation.get("file_path", ""))
-            known.setdefault(rel_path, set()).update(int(line) for line in operation.get("line_numbers", []))
+            edits = operation.get("edits", [])
+            if isinstance(edits, list) and edits:
+                known.setdefault(rel_path, []).extend(edit for edit in edits if isinstance(edit, dict))
+            else:
+                known.setdefault(rel_path, []).extend(
+                    {
+                        "id": f"legacy-delete:{rel_path}:{line}",
+                        "action": "delete",
+                        "start_line": int(line),
+                        "end_line": int(line),
+                        "line_delta": -1,
+                    }
+                    for line in operation.get("line_numbers", [])
+                )
     return known
+
+
+def _active_issue_ids(data_dir: Path, run_id: str) -> set[str]:
+    return {
+        str(issue_id)
+        for record in list_apply_records(data_dir)
+        if record.get("run_id") == run_id and record.get("status") == "applied"
+        for issue_id in record.get("issue_ids", [])
+    }
+
+
+def _context_was_replaced(line_number: int, known_edits: list[dict[str, Any]]) -> bool:
+    return any(
+        str(edit.get("action", "")) in {"delete", "replace"}
+        and int(edit.get("start_line", 0)) <= line_number <= int(edit.get("end_line", 0))
+        for edit in known_edits
+    )
 
 
 def _parse_context(context: str) -> dict[int, str]:

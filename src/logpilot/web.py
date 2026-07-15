@@ -12,7 +12,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .history import list_history_runs, load_history_run
-from .locking import RepositoryBusyError
+from .config import load_config
+from .locking import RepositoryBusyError, repository_operation_lock
+from .parsers import LANGUAGE_BY_SUFFIX
 from .pipeline import run_scan
 from .remediation import (
     ApplyConflictError,
@@ -23,6 +25,13 @@ from .remediation import (
     rollback_apply,
 )
 from .runtime import RuntimeExecutor, RuntimeRegistry
+from .scanner import scan_repository
+from .settings import (
+    SettingsError,
+    build_language_profile,
+    save_repository_settings,
+    settings_payload,
+)
 from .storage import repository_data_dir
 
 
@@ -63,6 +72,13 @@ def build_server(
                 self._send_json(apply_status(state["repo_root"], run_ids[0] if run_ids else None))
             elif parsed.path == "/api/runtimes":
                 self._send_json(_runtime_payload(runtimes, state, refresh=False))
+            elif parsed.path == "/api/settings":
+                paths = parse_qs(parsed.query).get("path", [])
+                target = _resolve_repo_path(paths[0]) if paths else state["repo_root"]
+                if not target.is_dir():
+                    self._send_json({"error": f"仓库路径不存在：{target}"}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json({"repository": str(target), **settings_payload(target)})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -78,6 +94,10 @@ def build_server(
                 self._handle_apply()
             elif parsed.path == "/api/apply/rollback":
                 self._handle_rollback()
+            elif parsed.path == "/api/settings":
+                self._handle_settings_save()
+            elif parsed.path == "/api/settings/profile":
+                self._handle_settings_profile()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -185,6 +205,41 @@ def build_server(
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
                 browse_lock.release()
+
+        def _handle_settings_save(self) -> None:
+            try:
+                payload = self._read_json()
+                target = _resolve_repo_path(str(payload.get("path", state["repo_root"])))
+                if not target.is_dir():
+                    raise SettingsError(f"仓库路径不存在：{target}")
+                raw_settings = payload.get("settings", {})
+                if not isinstance(raw_settings, dict):
+                    raise SettingsError("设置内容必须是对象。")
+                save_repository_settings(target, raw_settings)
+                self._send_json({"repository": str(target), **settings_payload(target)})
+            except SettingsError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _handle_settings_profile(self) -> None:
+            try:
+                payload = self._read_json()
+                target = _resolve_repo_path(str(payload.get("path", state["repo_root"])))
+                if not target.is_dir():
+                    raise SettingsError(f"仓库路径不存在：{target}")
+                with repository_operation_lock(target):
+                    config = load_config(target)
+                    config.scan.include_extensions = sorted(LANGUAGE_BY_SUFFIX)
+                    logs, _files_scanned = scan_repository(target, config.scan)
+                    build_language_profile(target, logs, config.scan.exclude)
+                self._send_json({"repository": str(target), **settings_payload(target)})
+            except RepositoryBusyError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            except SettingsError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _send_history_run(self, query: str) -> None:
             run_ids = parse_qs(query).get("run_id", [])
@@ -358,7 +413,7 @@ def _html() -> str:
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }
-    button, input, select { font: inherit; }
+    button, input, select, textarea { font: inherit; }
     button, input, .runtime-control, .nav-item, .result-item {
       transition: border-color .14s ease, background-color .14s ease, color .14s ease, box-shadow .14s ease;
     }
@@ -580,43 +635,64 @@ def _html() -> str:
     }
     .summary-grid {
       display: grid;
-      grid-template-columns: 1.25fr repeat(4, minmax(108px, 1fr));
-      gap: 10px;
-    }
-    .score-panel, .metric {
-      min-height: 96px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 16px 18px;
+      grid-template-columns: minmax(190px, 1.25fr) repeat(3, minmax(105px, .75fr)) minmax(220px, 1.35fr);
+      overflow: hidden;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--surface);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025), 0 1px 2px rgba(0, 0, 0, .16);
     }
+    .score-panel, .metric, .risk-panel {
+      min-width: 0;
+      min-height: 112px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 17px 18px;
+      border-right: 1px solid var(--line);
+    }
+    .risk-panel { border-right: 0; }
+    .metric { justify-content: center; }
     .metric-label {
       color: var(--muted);
-      font-size: 11px;
+      font-size: 10px;
+      line-height: 1;
     }
-    .score-line { display: flex; align-items: baseline; gap: 8px; }
+    .score-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .score-status { display: flex; align-items: center; gap: 6px; color: var(--score-color); font-size: 10px; font-weight: 600; }
+    .score-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 13%, transparent); }
+    .score-panel.score-danger { --score-color: var(--red); }
+    .score-panel.score-warning { --score-color: var(--amber); }
+    .score-panel.score-healthy { --score-color: var(--green); }
+    .score-panel.score-neutral { --score-color: var(--subtle); }
+    .score-line { display: flex; align-items: flex-end; gap: 7px; }
     .score-line strong, .metric strong {
       margin: 0;
       color: #fff;
-      font-size: 25px;
+      font-size: 27px;
       line-height: 1;
       font-weight: 720;
     }
-    .score-line span { margin: 0; color: var(--muted); font-size: 11px; }
-    .score-track { height: 3px; border-radius: 999px; background: #25252a; overflow: hidden; }
+    .metric strong { margin-top: 13px; }
+    .score-line span { margin: 0 0 2px; color: var(--subtle); font-size: 10px; }
+    .score-track { height: 4px; border-radius: 999px; background: #25252a; overflow: hidden; }
     .score-track i {
       display: block;
       width: calc(var(--score, 0) * 1%);
       height: 100%;
-      background: var(--accent);
+      background: var(--score-color, var(--accent));
       border-radius: inherit;
     }
     .metric span { margin: 0; }
+    .risk-breakdown { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+    .risk-stat { min-width: 0; padding: 9px 9px 8px; border: 1px solid var(--line-soft); border-radius: 5px; background: #111113; }
+    .risk-stat span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; }
+    .risk-stat span::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--risk-color); }
+    .risk-stat strong { display: block; margin-top: 7px; color: var(--risk-color); font-size: 18px; line-height: 1; }
+    .risk-stat.high-risk { --risk-color: var(--red); }
+    .risk-stat.medium-risk { --risk-color: var(--amber); }
+    .risk-stat.low-risk { --risk-color: var(--green); }
     #currentPanel { max-width: 1180px; }
     .workspace-section { margin-top: 22px; }
     .snapshot-banner {
@@ -797,6 +873,7 @@ def _html() -> str:
     .result-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .result-title { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
     .issue-status { flex: 0 0 auto; color: var(--green); font-size: 10px; font-weight: 600; }
+    .issue-status.muted { color: var(--subtle); }
     .result-rules { margin-top: 6px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
     .result-caret { color: var(--subtle); transition: transform .16s ease; }
     .result-item.expanded .result-caret { transform: rotate(180deg); }
@@ -809,7 +886,25 @@ def _html() -> str:
     .inline-block { margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
     .inline-block-header { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); color: var(--muted); font-size: 10px; }
     .inline-block pre { min-height: 0; max-height: 280px; padding: 13px 14px; flex: none; background: #090a0d; white-space: pre; }
-    .diff-remove { display: block; margin: 0 -14px; padding: 0 14px; background: rgba(251, 113, 133, .10); color: #fda4af; }
+    .code-view, .diff-view {
+      overflow: auto;
+      background: #090a0d;
+      color: #d4d4d8;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.65;
+    }
+    .code-view { max-height: 280px; padding: 12px 0; }
+    .code-line, .diff-line { display: block; min-width: max-content; padding: 0 14px; white-space: pre; }
+    .code-line.target { background: rgba(251, 191, 36, .08); color: #fde68a; box-shadow: inset 2px 0 0 var(--amber); }
+    .diff-view { min-height: 0; }
+    .inline-diff { max-height: 280px; padding: 10px 0; }
+    .diff-line { min-width: 100%; padding: 1px 18px; }
+    .diff-line.add { background: rgba(52, 211, 153, .11); color: #86efac; box-shadow: inset 3px 0 0 #22c55e; }
+    .diff-line.remove { background: rgba(251, 113, 133, .11); color: #fda4af; box-shadow: inset 3px 0 0 #f43f5e; }
+    .diff-line.file { background: rgba(96, 165, 250, .07); color: #93c5fd; }
+    .diff-line.hunk { background: rgba(139, 92, 246, .07); color: #c4b5fd; }
+    .diff-line.note { color: var(--subtle); font-style: italic; }
     .result-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
     .meta, .muted { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .pill {
@@ -897,6 +992,81 @@ def _html() -> str:
     .history-score span { color: var(--muted); font-size: 10px; }
     .history-stats { color: var(--muted); font-size: 11px; line-height: 1.7; }
     .history-row button { justify-self: end; }
+    .settings-stack { display: grid; gap: 22px; }
+    .settings-surface {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .settings-surface-header {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .settings-surface-header h2 { margin: 0 0 4px; font-size: 14px; }
+    .settings-surface-header p { margin: 0; color: var(--muted); font-size: 10px; }
+    .mode-switch, .settings-actions { display: flex; align-items: center; gap: 8px; }
+    .mode-switch { padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+    .mode-switch button { height: 30px; padding: 0 11px; border: 0; background: transparent; box-shadow: none; color: var(--muted); }
+    .mode-switch button.active { background: var(--surface-3); color: var(--ink); }
+    .language-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .language-option {
+      min-height: 86px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 16px;
+      border-right: 1px solid var(--line-soft);
+      cursor: pointer;
+    }
+    .language-option:last-child { border-right: 0; }
+    .language-option:hover { background: var(--surface-2); }
+    .language-option input { margin: 3px 0 0; accent-color: var(--accent); }
+    .language-option strong { display: block; margin-bottom: 6px; font-size: 12px; }
+    .language-option span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .language-option em { color: var(--green); font-style: normal; }
+    .template-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 190px; }
+    .template-nav { padding: 10px; border-right: 1px solid var(--line); }
+    .template-nav button {
+      width: 100%;
+      height: 42px;
+      justify-content: space-between;
+      padding: 0 11px;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      color: var(--muted);
+    }
+    .template-nav button.active { background: var(--accent-soft); color: var(--ink); }
+    .template-editor { display: grid; gap: 12px; align-content: start; padding: 16px 18px; }
+    .template-editor-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .template-source { padding: 3px 7px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 9px; }
+    .template-support { color: var(--muted); font-size: 10px; }
+    .template-support.ready { color: var(--green); }
+    .template-input {
+      width: 100%;
+      min-height: 72px;
+      resize: vertical;
+      padding: 12px 13px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      outline: 0;
+      background: var(--code);
+      color: var(--ink);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .template-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .template-footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .template-vars { color: var(--subtle); font-family: "Cascadia Code", Consolas, monospace; font-size: 9px; }
+    .runtime-settings { margin-top: 22px; }
     .runtime-overview {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -1044,7 +1214,7 @@ def _html() -> str:
     }
     .dialog-title h2 { margin: 0 0 3px; font-size: 15px; }
     .dialog-title p { margin: 0; color: var(--muted); font-size: 10px; }
-    .dialog pre { min-height: 320px; max-height: calc(100dvh - 108px); flex: 1; }
+    .dialog > .diff-view { min-height: 320px; max-height: calc(100dvh - 108px); flex: 1; padding: 14px 0; }
     .dialog.compact { width: min(520px, 100%); }
     .confirm-body { padding: 22px; color: var(--muted); font-size: 12px; line-height: 1.7; }
     .confirm-body strong { color: var(--ink); }
@@ -1136,6 +1306,9 @@ def _html() -> str:
       }
       main { overflow: visible; }
       .view-panel { padding: 22px 20px 32px; }
+      .summary-grid { grid-template-columns: minmax(160px, 1.2fr) repeat(3, minmax(92px, 1fr)); }
+      .metric:nth-child(4) { border-right: 0; }
+      .risk-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); }
       .results-toolbar {
         grid-template-columns: minmax(0, 1fr) auto;
         grid-template-areas: "search action" "filters filters";
@@ -1151,6 +1324,11 @@ def _html() -> str:
       .runtime-header { display: none; }
       .runtime-row { grid-template-columns: minmax(150px, 1fr) auto; }
       .runtime-row .runtime-value { display: none; }
+      .language-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .language-option:nth-child(2) { border-right: 0; }
+      .language-option:nth-child(-n+2) { border-bottom: 1px solid var(--line-soft); }
+      .template-layout { grid-template-columns: 1fr; }
+      .template-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid var(--line); }
       .section-actions { gap: 8px; }
       .snapshot-banner { align-items: flex-start; flex-direction: column; }
     }
@@ -1162,9 +1340,11 @@ def _html() -> str:
       .topbar { grid-template-columns: 1fr; }
       .repo-control { grid-template-columns: 1fr auto; }
       #scanButton { width: 100%; }
-      .summary-grid { grid-template-columns: 1fr 1fr; }
-      .score-panel { grid-column: 1 / -1; }
-      .summary-grid > * { border: 1px solid var(--line); }
+      .summary-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+      .score-panel { grid-column: 1 / -1; min-height: 104px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .metric { grid-column: span 2; min-height: 84px; padding: 14px 12px; }
+      .metric strong { margin-top: 10px; font-size: 23px; }
+      .risk-panel { grid-column: 1 / -1; min-height: 104px; }
       .compact-action span { display: none; }
       .file-group-header { grid-template-columns: minmax(0, 1fr); gap: 4px; }
       .file-select { justify-self: start; margin-left: 51px; }
@@ -1175,6 +1355,10 @@ def _html() -> str:
       .copy-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
       .batch-copy span { display: none; }
       .batch-bar { min-height: 54px; gap: 10px; padding-left: 14px; }
+      .settings-surface-header, .template-footer { align-items: flex-start; flex-direction: column; }
+      .settings-actions { width: 100%; }
+      .settings-actions button { flex: 1; }
+      .template-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (prefers-reduced-motion: reduce) {
       .toast, .toast.leaving { animation: none; }
@@ -1234,7 +1418,34 @@ def _html() -> str:
         </div>
       </section>
       <section id="settingsPanel" class="view-panel hidden">
-        <div class="section-bar"><div class="section-title"><h2>运行时</h2><span class="section-count">选择日志分析使用的本机执行环境</span></div></div>
+        <div class="section-bar"><div class="section-title"><h2>仓库设置</h2><span class="section-count" id="settingsRepository">仓库配置</span></div><button id="saveSettingsButton" type="button">保存设置</button></div>
+        <div class="settings-stack">
+          <section class="settings-surface">
+            <header class="settings-surface-header">
+              <div><h2>分析语言</h2><p>自动识别仓库语言，或固定本次分析范围</p></div>
+              <div class="mode-switch" id="languageMode" role="group" aria-label="语言识别模式"><button type="button" data-language-mode="auto">自动识别</button><button type="button" data-language-mode="custom">手动选择</button></div>
+            </header>
+            <div class="language-options" id="languageOptions"></div>
+          </section>
+          <section class="settings-surface">
+            <header class="settings-surface-header">
+              <div><h2>日志模板</h2><p>异常日志优先沿用仓库中的实现风格</p></div>
+              <button class="secondary" id="profileRepositoryButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 4-7"/></svg><span>扫描并推荐</span></button>
+            </header>
+            <div class="template-layout">
+              <nav class="template-nav" id="templateLanguageNav" aria-label="模板语言"></nav>
+              <div class="template-editor">
+                <div class="template-editor-meta"><span class="template-source" id="templateSource">内置模板</span><span class="template-support" id="templateSupport"></span></div>
+                <textarea class="template-input" id="templateInput" spellcheck="false" aria-label="日志模板"></textarea>
+                <div class="template-footer">
+                  <span class="template-vars">{event} {exception} {function} {logger} {indent}</span>
+                  <div class="settings-actions"><button class="secondary" id="useRecommendedTemplate" type="button">采用推荐</button><button class="secondary" id="useBuiltinTemplate" type="button">使用内置</button></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="section-bar runtime-settings"><div class="section-title"><h2>运行时</h2><span class="section-count">本机分析执行环境</span></div></div>
         <div class="runtime-overview">
           <div class="runtime-machine">
             <span class="machine-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg></span>
@@ -1266,7 +1477,7 @@ def _html() -> str:
         <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的安全修改，可在结果流中勾选后采纳</p></div>
         <button class="secondary icon-only" id="closePatchDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </header>
-      <pre id="fullPatchPre">暂无修改内容</pre>
+      <div class="diff-view" id="fullPatchPre"><span class="diff-line note">暂无修改内容</span></div>
     </section>
   </div>
   <div class="dialog-backdrop hidden" id="applyDialog" role="dialog" aria-modal="true" aria-labelledby="applyDialogTitle">
@@ -1305,6 +1516,11 @@ def _html() -> str:
       diagnosticsOpen: false,
       runtimes: [],
       selectedRuntime: "",
+      repositorySettings: { language_mode: "auto", selected_languages: [], templates: {} },
+      languageProfile: { detected_languages: [], template_recommendations: {} },
+      settingsLanguages: [],
+      templateLanguage: "python",
+      settingsBusy: false,
       activeView: "current"
     };
     const repoPath = document.querySelector("#repoPath");
@@ -1343,6 +1559,16 @@ def _html() -> str:
     const closeApplyDialog = document.querySelector("#closeApplyDialog");
     const cancelApplyButton = document.querySelector("#cancelApplyButton");
     const confirmApplyButton = document.querySelector("#confirmApplyButton");
+    const saveSettingsButton = document.querySelector("#saveSettingsButton");
+    const profileRepositoryButton = document.querySelector("#profileRepositoryButton");
+    const languageMode = document.querySelector("#languageMode");
+    const languageOptions = document.querySelector("#languageOptions");
+    const templateLanguageNav = document.querySelector("#templateLanguageNav");
+    const templateInput = document.querySelector("#templateInput");
+    const templateSource = document.querySelector("#templateSource");
+    const templateSupport = document.querySelector("#templateSupport");
+    const useRecommendedTemplate = document.querySelector("#useRecommendedTemplate");
+    const useBuiltinTemplate = document.querySelector("#useBuiltinTemplate");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
     browseButton.addEventListener("click", browseRepository);
@@ -1351,7 +1577,10 @@ def _html() -> str:
     });
     currentTab.addEventListener("click", () => showTab("current"));
     historyTab.addEventListener("click", () => showTab("history"));
-    settingsTab.addEventListener("click", () => showTab("settings"));
+    settingsTab.addEventListener("click", () => {
+      showTab("settings");
+      loadRepositorySettings(repoPath.value, true);
+    });
     refreshRuntimesButton.addEventListener("click", () => loadRuntimes(true));
     runtimeSelect.addEventListener("change", () => {
       state.selectedRuntime = runtimeSelect.value;
@@ -1389,6 +1618,46 @@ def _html() -> str:
     closeApplyDialog.addEventListener("click", closeApplyConfirmation);
     cancelApplyButton.addEventListener("click", closeApplyConfirmation);
     confirmApplyButton.addEventListener("click", submitApply);
+    saveSettingsButton.addEventListener("click", saveRepositorySettings);
+    profileRepositoryButton.addEventListener("click", profileRepository);
+    languageMode.addEventListener("click", event => {
+      const button = event.target.closest("button[data-language-mode]");
+      if (!button) return;
+      state.repositorySettings.language_mode = button.dataset.languageMode;
+      if (button.dataset.languageMode === "custom" && !state.repositorySettings.selected_languages.length) {
+        const detected = state.languageProfile.detected_languages.filter(item => item.recommended).map(item => item.id);
+        state.repositorySettings.selected_languages = detected.length ? detected : ["python"];
+      }
+      renderRepositorySettings();
+    });
+    languageOptions.addEventListener("change", event => {
+      const input = event.target.closest("input[data-language-id]");
+      if (!input) return;
+      const selected = new Set(state.repositorySettings.selected_languages);
+      if (input.checked) selected.add(input.dataset.languageId);
+      else selected.delete(input.dataset.languageId);
+      state.repositorySettings.selected_languages = [...selected];
+      renderRepositorySettings();
+    });
+    templateLanguageNav.addEventListener("click", event => {
+      const button = event.target.closest("button[data-template-language]");
+      if (!button) return;
+      state.templateLanguage = button.dataset.templateLanguage;
+      renderRepositorySettings();
+    });
+    templateInput.addEventListener("input", () => {
+      state.repositorySettings.templates[state.templateLanguage] = templateInput.value;
+      renderTemplateMeta();
+    });
+    useRecommendedTemplate.addEventListener("click", () => {
+      const recommendation = templateRecommendation(state.templateLanguage);
+      state.repositorySettings.templates[state.templateLanguage] = recommendation.template || languageDefinition(state.templateLanguage)?.builtin_template || "";
+      renderRepositorySettings();
+    });
+    useBuiltinTemplate.addEventListener("click", () => {
+      state.repositorySettings.templates[state.templateLanguage] = languageDefinition(state.templateLanguage)?.builtin_template || "";
+      renderRepositorySettings();
+    });
     applyDialog.addEventListener("click", event => {
       if (event.target === applyDialog) closeApplyConfirmation();
     });
@@ -1408,6 +1677,7 @@ def _html() -> str:
         state.activeRunId = state.history[0]?.run_id || "";
         repoPath.value = state.path;
         updateRepositoryIdentity(state.path);
+        await loadRepositorySettings(state.path, true);
         renderHistory(state.history);
         if (payload.has_report) await loadReport();
         else renderEmpty();
@@ -1444,6 +1714,80 @@ def _html() -> str:
       }
     }
 
+    async function loadRepositorySettings(path, quiet = false) {
+      const target = String(path || "").trim();
+      if (!target || state.settingsBusy) return;
+      state.settingsBusy = true;
+      updateSettingsBusy();
+      try {
+        const response = await fetch(`/api/settings?path=${encodeURIComponent(target)}`);
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "仓库设置读取失败");
+        state.repositorySettings = payload.settings || { language_mode: "auto", selected_languages: [], templates: {} };
+        state.languageProfile = payload.profile || { detected_languages: [], template_recommendations: {} };
+        state.settingsLanguages = payload.languages || [];
+        if (!state.settingsLanguages.some(item => item.id === state.templateLanguage)) {
+          state.templateLanguage = state.settingsLanguages[0]?.id || "python";
+        }
+        renderRepositorySettings(payload.repository || target);
+      } catch (error) {
+        if (!quiet) showToast(`设置读取失败：${error.message}`, "error");
+      } finally {
+        state.settingsBusy = false;
+        updateSettingsBusy();
+      }
+    }
+
+    async function saveRepositorySettings() {
+      if (state.settingsBusy) return;
+      state.settingsBusy = true;
+      updateSettingsBusy();
+      try {
+        const response = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: repoPath.value.trim(), settings: state.repositorySettings })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "设置保存失败");
+        state.repositorySettings = payload.settings;
+        state.languageProfile = payload.profile || state.languageProfile;
+        state.settingsLanguages = payload.languages || state.settingsLanguages;
+        renderRepositorySettings(payload.repository);
+        showToast("仓库设置已保存", "success");
+      } catch (error) {
+        showToast(`保存失败：${error.message}`, "error");
+      } finally {
+        state.settingsBusy = false;
+        updateSettingsBusy();
+      }
+    }
+
+    async function profileRepository() {
+      if (state.settingsBusy) return;
+      state.settingsBusy = true;
+      updateSettingsBusy();
+      showToast("正在识别语言和日志风格...", "info", 0);
+      try {
+        const response = await fetch("/api/settings/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: repoPath.value.trim() })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "仓库识别失败");
+        state.languageProfile = payload.profile || state.languageProfile;
+        state.settingsLanguages = payload.languages || state.settingsLanguages;
+        renderRepositorySettings(payload.repository);
+        showToast("语言与日志模板推荐已更新", "success");
+      } catch (error) {
+        showToast(`识别失败：${error.message}`, "error");
+      } finally {
+        state.settingsBusy = false;
+        updateSettingsBusy();
+      }
+    }
+
     async function browseRepository() {
       if (state.browsing) return;
       setBrowsing(true);
@@ -1461,6 +1805,7 @@ def _html() -> str:
         state.path = payload.path;
         repoPath.value = payload.path;
         updateRepositoryIdentity(state.path);
+        await loadRepositorySettings(state.path, true);
         showToast("仓库路径已更新", "success");
       } catch (error) {
         const message = error.name === "AbortError" ? "选择窗口超时，请手动输入路径或重试。" : error.message;
@@ -1502,6 +1847,7 @@ def _html() -> str:
         state.activeRunId = payload.run?.run_id || state.history[0]?.run_id || "";
         await loadPatch();
         await loadApplies();
+        await loadRepositorySettings(state.path, true);
         showTab("current");
         showToast(`${runtime.name} 分析完成，结果已更新`, "success");
       } catch (error) {
@@ -1525,7 +1871,7 @@ def _html() -> str:
       const text = await response.text();
       state.patch = response.ok ? text : "暂无补丁产物。";
       fullPatchButton.disabled = false;
-      fullPatchPre.textContent = state.patch;
+      renderFullPatch(state.patch);
     }
 
     async function loadHistoryRun(runId) {
@@ -1538,7 +1884,7 @@ def _html() -> str:
         state.activeRunId = runId;
         state.patch = payload.patch || "暂无补丁产物。";
         fullPatchButton.disabled = false;
-        fullPatchPre.textContent = state.patch;
+        renderFullPatch(state.patch);
         if (payload.metadata && payload.metadata.repository) {
           updateRepositoryIdentity(payload.metadata.repository);
         }
@@ -1592,7 +1938,7 @@ def _html() -> str:
       const selected = issueGroups().filter(group => patchIssueIds(group).some(id => unique.includes(id)));
       const files = new Set(selected.map(group => group.primary.file_path));
       state.pendingIssueIds = unique;
-      applySummary.innerHTML = `将删除 <strong>${selected.length}</strong> 处日志调用，涉及 <strong>${files.size}</strong> 个文件。<br>仅写入已生成的精确修改，不会执行模型文本建议。`;
+      applySummary.innerHTML = `将采纳 <strong>${selected.length}</strong> 处精确修改，涉及 <strong>${files.size}</strong> 个文件。<br>写入前会统一校验源码快照，任一修改失效时整批取消。`;
       applyDialog.classList.remove("hidden");
       confirmApplyButton.focus();
     }
@@ -1685,7 +2031,7 @@ def _html() -> str:
     }
 
     function openFullPatch() {
-      fullPatchPre.textContent = state.patch || "本次分析没有生成安全修改。";
+      renderFullPatch(state.patch || "本次分析没有生成安全修改。");
       fullPatchDialog.classList.remove("hidden");
       closePatchDialog.focus();
     }
@@ -1758,6 +2104,72 @@ def _html() -> str:
       updateRuntimeIndicator();
     }
 
+    function renderRepositorySettings(path = repoPath.value) {
+      document.querySelector("#settingsRepository").textContent = repositoryName(path);
+      const settings = state.repositorySettings || { language_mode: "auto", selected_languages: [], templates: {} };
+      languageMode.querySelectorAll("button[data-language-mode]").forEach(button => {
+        button.classList.toggle("active", button.dataset.languageMode === settings.language_mode);
+      });
+      const detected = new Map((state.languageProfile.detected_languages || []).map(item => [item.id, item]));
+      languageOptions.innerHTML = state.settingsLanguages.map(language => {
+        const profile = detected.get(language.id) || {};
+        const checked = settings.language_mode === "auto"
+          ? Boolean(profile.recommended)
+          : settings.selected_languages.includes(language.id);
+        const stats = profile.file_count
+          ? `${profile.file_count} 个文件 · ${profile.log_count || 0} 条日志`
+          : "未在仓库中发现";
+        return `<label class="language-option"><input type="checkbox" data-language-id="${esc(language.id)}" ${checked ? "checked" : ""} ${settings.language_mode === "auto" ? "disabled" : ""}><span><strong>${esc(language.label)}${profile.recommended ? " <em>推荐</em>" : ""}</strong><span>${esc(stats)}</span></span></label>`;
+      }).join("");
+      templateLanguageNav.innerHTML = state.settingsLanguages.map(language => `
+        <button class="${language.id === state.templateLanguage ? "active" : ""}" type="button" data-template-language="${esc(language.id)}"><span>${esc(language.label)}</span><span>${esc(templateSourceText(language.id, true))}</span></button>
+      `).join("");
+      templateInput.value = effectiveTemplate(state.templateLanguage);
+      renderTemplateMeta();
+      updateSettingsBusy();
+    }
+
+    function renderTemplateMeta() {
+      const language = languageDefinition(state.templateLanguage);
+      templateSource.textContent = templateSourceText(state.templateLanguage, false);
+      templateSupport.textContent = language?.automatic_fix ? "支持自动补充" : "当前仅分析";
+      templateSupport.classList.toggle("ready", Boolean(language?.automatic_fix));
+      const recommendation = templateRecommendation(state.templateLanguage);
+      useRecommendedTemplate.disabled = state.settingsBusy || !recommendation.template;
+    }
+
+    function updateSettingsBusy() {
+      saveSettingsButton.disabled = state.settingsBusy;
+      profileRepositoryButton.disabled = state.settingsBusy;
+      saveSettingsButton.textContent = state.settingsBusy ? "处理中..." : "保存设置";
+    }
+
+    function languageDefinition(languageId) {
+      return state.settingsLanguages.find(item => item.id === languageId) || null;
+    }
+
+    function templateRecommendation(languageId) {
+      return state.languageProfile.template_recommendations?.[languageId] || {};
+    }
+
+    function hasFixedTemplate(languageId) {
+      return Object.prototype.hasOwnProperty.call(state.repositorySettings.templates || {}, languageId)
+        && Boolean(String(state.repositorySettings.templates[languageId] || "").trim());
+    }
+
+    function effectiveTemplate(languageId) {
+      if (hasFixedTemplate(languageId)) return state.repositorySettings.templates[languageId];
+      const recommendation = templateRecommendation(languageId);
+      return recommendation.template || languageDefinition(languageId)?.builtin_template || "";
+    }
+
+    function templateSourceText(languageId, compact) {
+      if (hasFixedTemplate(languageId)) return compact ? "固定" : "用户固定模板";
+      const recommendation = templateRecommendation(languageId);
+      if (recommendation.source === "repository") return compact ? "推荐" : "仓库推荐模板";
+      return compact ? "内置" : "内置安全模板";
+    }
+
     function renderEmpty() {
       state.report = null;
       state.patch = "";
@@ -1807,20 +2219,20 @@ def _html() -> str:
     function summaryMarkup(summary) {
       if (!summary) {
         return `
-          <div class="score-panel"><span class="metric-label">治理评分</span><div class="score-line"><strong>-</strong><span>未分析</span></div><div class="score-track" style="--score:0"><i></i></div></div>
+          <div class="score-panel score-neutral"><div class="score-heading"><span class="metric-label">治理评分</span><span class="score-status">待分析</span></div><div class="score-line"><strong>-</strong><span>/ 100</span></div><div class="score-track" style="--score:0"><i></i></div></div>
           ${metricMarkup("-", "扫描文件")}
           ${metricMarkup("-", "日志调用")}
           ${metricMarkup("-", "发现问题")}
-          ${metricMarkup("-", "高 / 中 / 低")}
+          ${riskMarkup({})}
         `;
       }
       const sev = summary.severity_counts || {};
       return `
-        <div class="score-panel"><span class="metric-label">治理评分</span><div class="score-line"><strong>${esc(summary.score)}</strong><span>/ 100 · ${esc(scoreLabel(summary.score))}</span></div><div class="score-track" style="--score:${esc(summary.score)}"><i></i></div></div>
+        <div class="score-panel ${esc(scoreTone(summary.score))}"><div class="score-heading"><span class="metric-label">治理评分</span><span class="score-status">${esc(scoreLabel(summary.score))}</span></div><div class="score-line"><strong>${esc(summary.score)}</strong><span>/ 100</span></div><div class="score-track" style="--score:${esc(summary.score)}"><i></i></div></div>
         ${metricMarkup(summary.files_scanned, "扫描文件")}
         ${metricMarkup(summary.log_count, "日志调用")}
         ${metricMarkup(summary.issue_count, "发现问题")}
-        ${metricMarkup(`${sev.high || 0} / ${sev.medium || 0} / ${sev.low || 0}`, "高 / 中 / 低")}
+        ${riskMarkup(sev)}
       `;
     }
 
@@ -1828,10 +2240,25 @@ def _html() -> str:
       return `<div class="metric"><span class="metric-label">${esc(label)}</span><strong>${esc(value)}</strong></div>`;
     }
 
+    function riskMarkup(counts) {
+      const hasCounts = Object.keys(counts).length > 0;
+      return `<div class="risk-panel"><span class="metric-label">风险分布</span><div class="risk-breakdown">
+        <div class="risk-stat high-risk"><span>高</span><strong>${esc(hasCounts ? counts.high || 0 : "-")}</strong></div>
+        <div class="risk-stat medium-risk"><span>中</span><strong>${esc(hasCounts ? counts.medium || 0 : "-")}</strong></div>
+        <div class="risk-stat low-risk"><span>低</span><strong>${esc(hasCounts ? counts.low || 0 : "-")}</strong></div>
+      </div></div>`;
+    }
+
     function scoreLabel(score) {
       if (score >= 85) return "健康";
       if (score >= 60) return "需关注";
       return "高风险";
+    }
+
+    function scoreTone(score) {
+      if (score >= 85) return "score-healthy";
+      if (score >= 60) return "score-warning";
+      return "score-danger";
     }
 
     function renderResultStream() {
@@ -1861,7 +2288,7 @@ def _html() -> str:
       const severityRank = { high: 3, medium: 2, low: 1 };
       const groups = new Map();
       issues.forEach(issue => {
-        const id = issue.log_call_id || issue.id;
+        const id = issue.log_call_id || issue.fix?.id || issue.id;
         if (!groups.has(id)) groups.set(id, { id, issues: [], primary: issue, log: logsById.get(issue.log_call_id) || null });
         const group = groups.get(id);
         group.issues.push(issue);
@@ -1905,7 +2332,7 @@ def _html() -> str:
     }
 
     function patchIssueIds(group) {
-      return group ? group.issues.filter(issue => issue.patch_action === "delete" && issue.source_line).map(issue => issue.id) : [];
+      return group ? [...new Set(group.issues.filter(issue => issue.fix?.id).map(issue => issue.id))] : [];
     }
 
     function isGroupApplied(group) {
@@ -1959,14 +2386,15 @@ def _html() -> str:
       const rules = [...new Set(group.issues.map(item => ruleText(item.kind)).filter(Boolean))];
       const reasons = uniqueText(group.issues.map(item => item.reason));
       const suggestions = uniqueText(group.issues.map(item => item.suggestion));
-      const patchIssue = group.issues.find(item => item.patch_action === "delete" && item.source_line);
+      const fixIssue = group.issues.find(item => item.fix?.id);
+      const fix = fixIssue?.fix || null;
       return `
         <article class="result-item ${expanded ? "expanded" : ""} ${state.selectedGroups.has(group.id) ? "selected" : ""}">
           <div class="result-item-header">
             <label class="issue-select" title="${applicable ? "选择此修改" : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
             <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
             <button class="result-toggle" type="button" data-group-toggle="${esc(group.id)}" aria-expanded="${expanded ? "true" : "false"}">
-              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span>${applied ? '<span class="issue-status">已采纳</span>' : ""}</span>
+              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span>${applied ? '<span class="issue-status">已采纳</span>' : !fix ? '<span class="issue-status muted">仅建议</span>' : ""}</span>
               <span class="result-rules">第 ${esc(issue.line)} 行 · ${esc(rules.join("、"))} · ${esc(sourceText(issue.source))}</span>
             </button>
             <svg class="icon result-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -1977,9 +2405,9 @@ def _html() -> str:
                 <div class="copy-row"><span>原因</span><div>${reasons.map(value => `<p>${esc(value)}</p>`).join("") || "未提供"}</div></div>
                 <div class="copy-row"><span>建议</span><div>${suggestions.map(value => `<p>${esc(value)}</p>`).join("") || "未提供"}</div></div>
               </div>
-              <div class="inline-block"><div class="inline-block-header"><span>相关代码</span><span>${esc(issue.file_path)}:${esc(issue.line)}</span></div><pre>${esc(relatedCodeTextFor(group))}</pre></div>
-              ${patchIssue ? `<div class="inline-block"><div class="inline-block-header"><span>修改预览</span><span>删除当前日志调用</span></div><pre><span class="diff-remove">- ${esc(patchIssue.source_line)}</span></pre></div>` : ""}
-              ${patchIssue ? `<div class="result-footer"><button type="button" data-apply-group="${esc(group.id)}" ${applicable ? "" : "disabled"}>${applied ? "已采纳" : "采纳此修改"}</button></div>` : ""}
+              <div class="inline-block"><div class="inline-block-header"><span>相关代码</span><span>${esc(issue.file_path)}:${esc(issue.line)}</span></div><div class="code-view">${codeContextMarkup(relatedCodeTextFor(group))}</div></div>
+              ${fix ? `<div class="inline-block"><div class="inline-block-header"><span>修改预览</span><span>${esc(fixActionText(fix))} · ${esc(fixSourceText(fix.source))}</span></div><div class="diff-view inline-diff">${diffMarkup(fixPreview(fix))}</div></div>` : ""}
+              ${fix ? `<div class="result-footer"><button type="button" data-apply-group="${esc(group.id)}" ${applicable ? "" : "disabled"}>${applied ? "已采纳" : "采纳此修改"}</button></div>` : ""}
             </div>` : ""}
         </article>`;
     }
@@ -1995,6 +2423,46 @@ def _html() -> str:
       return context.split("\\n").map(line =>
         line.trimStart().startsWith(String(issue.line) + ":") ? "> " + line : "  " + line
       ).join("\\n");
+    }
+
+    function codeContextMarkup(value) {
+      return String(value || "").split("\\n").map(line => {
+        const target = line.startsWith("> ");
+        const content = target || line.startsWith("  ") ? line.slice(2) : line;
+        return `<span class="code-line ${target ? "target" : ""}">${esc(content || " ")}</span>`;
+      }).join("");
+    }
+
+    function diffMarkup(value) {
+      return String(value || "").split("\\n").map(line => {
+        let type = "context";
+        if (line.startsWith("--- ") || line.startsWith("+++ ")) type = "file";
+        else if (line.startsWith("@@")) type = "hunk";
+        else if (line.startsWith("+")) type = "add";
+        else if (line.startsWith("-")) type = "remove";
+        else if (line.startsWith("\\\\") || line.startsWith("#")) type = "note";
+        return `<span class="diff-line ${type}">${esc(line || " ")}</span>`;
+      }).join("");
+    }
+
+    function fixPreview(fix) {
+      const removed = String(fix.expected_text || "").split("\\n").map(line => `- ${line}`).join("\\n");
+      const added = String(fix.replacement_text || "").split("\\n").filter(line => line.length).map(line => `+ ${line}`).join("\\n");
+      if (fix.action === "delete") return removed;
+      if (fix.action === "replace") return `${removed}\\n${added}`;
+      return added;
+    }
+
+    function fixActionText(fix) {
+      return ({ delete: "删除日志", replace: "替换代码", insert_before: "补充日志" })[fix.action] || "修改代码";
+    }
+
+    function fixSourceText(source) {
+      return ({ fixed: "固定模板", repository: "仓库风格", builtin: "内置模板", rule: "规则生成" })[source] || "精确修改";
+    }
+
+    function renderFullPatch(value) {
+      fullPatchPre.innerHTML = diffMarkup(value);
     }
 
     function handleResultStreamClick(event) {

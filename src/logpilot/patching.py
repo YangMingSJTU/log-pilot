@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
+from .fixes import apply_fix_to_text
 from .models import Issue, LogCall
 
 
@@ -14,25 +15,28 @@ def write_patch(repo_root: Path, logs: list[LogCall], issues: list[Issue], outpu
 
 
 def generate_patch(repo_root: Path, logs: list[LogCall], issues: list[Issue]) -> str:
-    delete_ids = {issue.log_call_id for issue in issues if issue.patch_action == "delete" and issue.log_call_id}
-    if not delete_ids:
+    fixes = {issue.fix.id: issue.fix for issue in issues if issue.fix}
+    if not fixes:
         return "# No safe automatic patch generated.\n"
 
-    logs_by_id = {log.id: log for log in logs}
-    lines_to_delete_by_file: dict[str, set[int]] = {}
-    for log_id in delete_ids:
-        log = logs_by_id.get(log_id)
-        if not log:
-            continue
-        lines_to_delete_by_file.setdefault(log.file_path, set()).add(log.line)
+    fixes_by_file: dict[str, list] = {}
+    for fix in fixes.values():
+        fixes_by_file.setdefault(fix.file_path, []).append(fix)
 
     chunks: list[str] = []
-    for rel_path, line_numbers in sorted(lines_to_delete_by_file.items()):
+    for rel_path, file_fixes in sorted(fixes_by_file.items()):
         file_path = repo_root / rel_path
         if not file_path.exists():
             continue
-        original = file_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
-        modified = [line for idx, line in enumerate(original, start=1) if idx not in line_numbers]
+        original_text = file_path.read_text(encoding="utf-8", errors="ignore")
+        modified_text = original_text
+        try:
+            for fix in sorted(file_fixes, key=lambda item: (item.start_line, item.end_line), reverse=True):
+                modified_text = apply_fix_to_text(modified_text, fix)
+        except ValueError:
+            continue
+        original = original_text.splitlines(keepends=True)
+        modified = modified_text.splitlines(keepends=True)
         chunks.extend(
             difflib.unified_diff(
                 original,
