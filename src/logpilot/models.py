@@ -24,6 +24,8 @@ class LogCall:
     message: str
     context: str
     source_line: str
+    end_line: int = 0
+    safe_to_delete: bool = False
 
 
 @dataclass(slots=True)
@@ -71,6 +73,35 @@ class ScanReport:
     logs: list[LogCall] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
     ai_traces: list[AiTrace] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PatchOperation:
+    file_path: str
+    line_numbers: list[int]
+    issue_ids: list[str]
+    log_call_ids: list[str]
+    before_sha256: str = ""
+    after_sha256: str = ""
+    backup_file: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class ApplyRecord:
+    apply_id: str
+    run_id: str
+    repository: str
+    created_at: str
+    status: str
+    issue_ids: list[str]
+    operations: list[PatchOperation]
+    rolled_back_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

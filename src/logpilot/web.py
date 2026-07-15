@@ -12,8 +12,18 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .history import list_history_runs, load_history_run
+from .locking import RepositoryBusyError
 from .pipeline import run_scan
+from .remediation import (
+    ApplyConflictError,
+    ApplyNotFoundError,
+    RemediationError,
+    apply_status,
+    apply_suggestions,
+    rollback_apply,
+)
 from .runtime import RuntimeExecutor, RuntimeRegistry
+from .storage import repository_data_dir
 
 
 def build_server(
@@ -26,7 +36,7 @@ def build_server(
     initial_root = repo_root.resolve()
     state: dict[str, Any] = {
         "repo_root": initial_root,
-        "artifacts": initial_root / ".logpilot",
+        "artifacts": repository_data_dir(initial_root),
         "runtime_id": "auto",
     }
     runtimes = runtime_registry or RuntimeRegistry()
@@ -48,6 +58,9 @@ def build_server(
                 self._send_json({"repository": str(state["repo_root"]), "runs": list_history_runs(state["artifacts"])})
             elif parsed.path == "/api/history/run":
                 self._send_history_run(parsed.query)
+            elif parsed.path == "/api/applies":
+                run_ids = parse_qs(parsed.query).get("run_id", [])
+                self._send_json(apply_status(state["repo_root"], run_ids[0] if run_ids else None))
             elif parsed.path == "/api/runtimes":
                 self._send_json(_runtime_payload(runtimes, state, refresh=False))
             else:
@@ -61,6 +74,10 @@ def build_server(
                 self._handle_browse()
             elif parsed.path == "/api/runtimes/refresh":
                 self._send_json(_runtime_payload(runtimes, state, refresh=True))
+            elif parsed.path == "/api/apply":
+                self._handle_apply()
+            elif parsed.path == "/api/apply/rollback":
+                self._handle_rollback()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -84,7 +101,7 @@ def build_server(
                     runtime_executor=executor,
                 )
                 state["repo_root"] = target.resolve()
-                state["artifacts"] = target.resolve() / ".logpilot"
+                state["artifacts"] = repository_data_dir(target)
                 state["runtime_id"] = selected_runtime.id
                 history = list_history_runs(state["artifacts"])
                 self._send_json(
@@ -96,7 +113,59 @@ def build_server(
                         "runtime": selected_runtime.to_dict(),
                     }
                 )
+            except RepositoryBusyError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
             except Exception as exc:  # Keep the local UI useful during early scanner work.
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _handle_apply(self) -> None:
+            try:
+                payload = self._read_json()
+                run_id = str(payload.get("run_id", "")).strip()
+                raw_issue_ids = payload.get("issue_ids", [])
+                if not run_id:
+                    raise RemediationError("缺少分析记录 ID。")
+                if not isinstance(raw_issue_ids, list):
+                    raise RemediationError("问题 ID 必须使用数组传递。")
+                issue_ids = [str(issue_id) for issue_id in raw_issue_ids]
+                record = apply_suggestions(state["repo_root"], run_id, issue_ids)
+                self._send_json(
+                    {
+                        "record": record,
+                        "applies": apply_status(state["repo_root"], run_id),
+                    }
+                )
+            except RepositoryBusyError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            except ApplyConflictError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            except ApplyNotFoundError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except RemediationError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _handle_rollback(self) -> None:
+            try:
+                payload = self._read_json()
+                apply_id = str(payload.get("apply_id", "")).strip() or None
+                record = rollback_apply(state["repo_root"], apply_id)
+                self._send_json(
+                    {
+                        "record": record,
+                        "applies": apply_status(state["repo_root"], str(record.get("run_id", ""))),
+                    }
+                )
+            except RepositoryBusyError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            except ApplyConflictError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            except ApplyNotFoundError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except RemediationError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_browse(self) -> None:
@@ -160,7 +229,7 @@ def build_server(
 
 def serve(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     server = build_server(repo_root, host, port)
-    artifacts = repo_root.resolve() / ".logpilot"
+    artifacts = repository_data_dir(repo_root)
     print(f"LogPilot UI: http://{host}:{port}")
     print(f"Default repository: {repo_root.resolve()}")
     print(f"Reading artifacts from: {artifacts}")
@@ -549,6 +618,20 @@ def _html() -> str:
     }
     .metric span { margin: 0; }
     .workspace-section { margin-top: 28px; }
+    .snapshot-banner {
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+      padding: 8px 12px 8px 16px;
+      border: 1px solid rgba(251, 191, 36, .35);
+      border-radius: 7px;
+      background: rgba(251, 191, 36, .07);
+    }
+    .snapshot-copy { display: flex; align-items: center; gap: 9px; color: #f6d572; font-size: 11px; }
+    .snapshot-actions { display: flex; gap: 7px; }
     .section-bar {
       min-height: 48px;
       display: flex;
@@ -611,8 +694,8 @@ def _html() -> str:
       height: auto;
       min-height: 72px;
       display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      gap: 12px;
+      grid-template-columns: 20px auto minmax(0, 1fr);
+      gap: 10px;
       align-items: start;
       padding: 13px 16px;
       border: 0;
@@ -620,14 +703,28 @@ def _html() -> str:
       border-radius: 0;
       background: transparent;
       color: var(--ink);
-      text-align: left;
-      white-space: normal;
     }
     .issue-row:hover { background: #171719; }
     .issue-row.active {
       background: var(--accent-soft);
       box-shadow: inset 2px 0 0 #a78bfa;
     }
+    .issue-select { width: 20px; min-height: 22px; display: grid; place-items: center; }
+    .issue-select input { width: 14px; height: 14px; margin: 0; padding: 0; border: 0; border-radius: 3px; box-shadow: none; accent-color: var(--accent); cursor: pointer; }
+    .issue-select input:disabled { opacity: .28; cursor: default; }
+    .issue-main {
+      min-width: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      white-space: normal;
+      box-shadow: none;
+    }
+    .issue-main:hover { border-color: transparent; background: transparent; }
+    .issue-status { margin-left: 7px; color: var(--green); font-size: 10px; font-weight: 600; }
     .issue-title { display: block; margin: 0 0 7px; font-size: 13px; font-weight: 650; }
     .meta, .muted { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .pill {
@@ -667,6 +764,7 @@ def _html() -> str:
       border-bottom: 1px solid var(--line);
       background: var(--surface-2);
     }
+    .section-tabs .apply-current { margin-left: auto; }
     .mini-tab {
       height: 30px;
       padding: 0 10px;
@@ -880,6 +978,17 @@ def _html() -> str:
     .dialog-title h2 { margin: 0 0 3px; font-size: 15px; }
     .dialog-title p { margin: 0; color: var(--muted); font-size: 10px; }
     .dialog pre { min-height: 320px; max-height: calc(100dvh - 108px); flex: 1; }
+    .dialog.compact { width: min(520px, 100%); }
+    .confirm-body { padding: 22px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+    .confirm-body strong { color: var(--ink); }
+    .dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--line);
+      background: var(--surface);
+    }
     .icon-only { width: 34px; height: 34px; padding: 0; }
     .toast-region {
       position: fixed;
@@ -915,6 +1024,7 @@ def _html() -> str:
     .toast.success { --toast-accent: var(--green); }
     .toast.warning { --toast-accent: var(--amber); }
     .toast.error { --toast-accent: var(--red); }
+    .warning-dot { background: var(--amber); box-shadow: 0 0 0 3px rgba(251, 191, 36, .12); }
     .toast.leaving { animation: toast-out .16s ease-in forwards; }
     .toast-message { min-width: 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
     .danger { color: var(--red); }
@@ -971,6 +1081,7 @@ def _html() -> str:
       .runtime-row .runtime-value { display: none; }
       .section-actions { gap: 8px; }
       .legend { display: none; }
+      .snapshot-banner { align-items: flex-start; flex-direction: column; }
     }
     @media (max-width: 560px) {
       .sidebar { grid-template-columns: 1fr; grid-template-rows: 56px auto; }
@@ -1015,12 +1126,17 @@ def _html() -> str:
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
     <main>
       <div class="view-panel" id="currentPanel">
+        <div class="snapshot-banner hidden" id="snapshotBanner">
+          <div class="snapshot-copy"><span class="state-dot warning-dot"></span><span>源码已修改，当前结果为分析快照</span></div>
+          <div class="snapshot-actions"><button class="secondary" id="rollbackButton" type="button">撤销上次采纳</button><button class="secondary" id="rescanButton" type="button">重新分析</button></div>
+        </div>
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
         <section class="workspace-section">
           <div class="section-bar">
             <div class="section-title"><h2>问题清单</h2></div>
             <div class="section-actions">
               <div class="legend"><span><i class="high-dot"></i>高风险</span><span><i class="medium-dot"></i>中风险</span><span><i class="low-dot"></i>低风险</span></div>
+              <button class="compact-action" id="batchApplyButton" type="button" disabled>批量采纳</button>
               <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
             </div>
           </div>
@@ -1035,6 +1151,7 @@ def _html() -> str:
             <div class="section-tabs">
               <button class="mini-tab active" id="sourceTab" type="button">相关代码</button>
               <button class="mini-tab" id="patchTab" type="button">修改预览</button>
+              <button class="apply-current hidden" id="applyIssueButton" type="button">采纳此修改</button>
             </div>
             <pre id="detailPre">等待分析结果</pre>
             </section>
@@ -1074,10 +1191,20 @@ def _html() -> str:
   <div class="dialog-backdrop hidden" id="fullPatchDialog" role="dialog" aria-modal="true" aria-labelledby="fullPatchTitle">
     <section class="dialog">
       <header class="dialog-header">
-        <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的全部安全修改，仅供审查，不会自动写入源码</p></div>
+        <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的安全修改，可在问题清单中勾选后采纳</p></div>
         <button class="secondary icon-only" id="closePatchDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </header>
       <pre id="fullPatchPre">暂无修改内容</pre>
+    </section>
+  </div>
+  <div class="dialog-backdrop hidden" id="applyDialog" role="dialog" aria-modal="true" aria-labelledby="applyDialogTitle">
+    <section class="dialog compact">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="applyDialogTitle">确认采纳修改</h2><p>写入前会检查源码是否仍与分析快照一致</p></div>
+        <button class="secondary icon-only" id="closeApplyDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="confirm-body" id="applySummary"></div>
+      <div class="dialog-actions"><button class="secondary" id="cancelApplyButton" type="button">取消</button><button id="confirmApplyButton" type="button">确认采纳</button></div>
     </section>
   </div>
   <script>
@@ -1091,7 +1218,15 @@ def _html() -> str:
       history: [],
       report: null,
       patch: "",
+      activeRunId: "",
       selectedIssueId: "",
+      selectedGroups: new Set(),
+      appliedIssueIds: new Set(),
+      applyRecords: [],
+      latestApplyId: "",
+      canRollback: false,
+      pendingIssueIds: [],
+      applying: false,
       detailMode: "source",
       diagnosticsOpen: false,
       runtimes: [],
@@ -1119,6 +1254,16 @@ def _html() -> str:
     const closePatchDialog = document.querySelector("#closePatchDialog");
     const diagnosticsToggle = document.querySelector("#diagnosticsToggle");
     const diagnosticsPre = document.querySelector("#diagnosticsPre");
+    const batchApplyButton = document.querySelector("#batchApplyButton");
+    const applyIssueButton = document.querySelector("#applyIssueButton");
+    const snapshotBanner = document.querySelector("#snapshotBanner");
+    const rollbackButton = document.querySelector("#rollbackButton");
+    const rescanButton = document.querySelector("#rescanButton");
+    const applyDialog = document.querySelector("#applyDialog");
+    const applySummary = document.querySelector("#applySummary");
+    const closeApplyDialog = document.querySelector("#closeApplyDialog");
+    const cancelApplyButton = document.querySelector("#cancelApplyButton");
+    const confirmApplyButton = document.querySelector("#confirmApplyButton");
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
     browseButton.addEventListener("click", browseRepository);
@@ -1142,8 +1287,26 @@ def _html() -> str:
       if (event.target === fullPatchDialog) closeFullPatch();
     });
     diagnosticsToggle.addEventListener("click", toggleDiagnostics);
+    batchApplyButton.addEventListener("click", () => {
+      const groups = issueGroups().filter(group => state.selectedGroups.has(group.id));
+      openApplyDialog(groups.flatMap(group => patchIssueIds(group)));
+    });
+    applyIssueButton.addEventListener("click", () => {
+      const group = selectedIssueGroup();
+      if (group) openApplyDialog(patchIssueIds(group));
+    });
+    rollbackButton.addEventListener("click", rollbackLatestApply);
+    rescanButton.addEventListener("click", () => startScan(repoPath.value));
+    closeApplyDialog.addEventListener("click", closeApplyConfirmation);
+    cancelApplyButton.addEventListener("click", closeApplyConfirmation);
+    confirmApplyButton.addEventListener("click", submitApply);
+    applyDialog.addEventListener("click", event => {
+      if (event.target === applyDialog) closeApplyConfirmation();
+    });
     document.addEventListener("keydown", event => {
-      if (event.key === "Escape" && !fullPatchDialog.classList.contains("hidden")) closeFullPatch();
+      if (event.key !== "Escape") return;
+      if (!applyDialog.classList.contains("hidden")) closeApplyConfirmation();
+      else if (!fullPatchDialog.classList.contains("hidden")) closeFullPatch();
     });
 
     async function init() {
@@ -1153,6 +1316,7 @@ def _html() -> str:
         if (!stateResponse.ok || payload.error) throw new Error(payload.error || "状态读取失败");
         state.path = payload.repository || "";
         state.history = payload.history || [];
+        state.activeRunId = state.history[0]?.run_id || "";
         repoPath.value = state.path;
         updateRepositoryIdentity(state.path);
         renderHistory(state.history);
@@ -1246,7 +1410,9 @@ def _html() -> str:
         updateRepositoryIdentity(state.path);
         renderReport(payload.report);
         renderHistory(state.history);
+        state.activeRunId = payload.run?.run_id || state.history[0]?.run_id || "";
         await loadPatch();
+        await loadApplies();
         showTab("current");
         showToast(`${runtime.name} 分析完成，结果已更新`, "success");
       } catch (error) {
@@ -1262,6 +1428,7 @@ def _html() -> str:
       if (!reportResponse.ok || report.error) throw new Error(report.error || "报告读取失败");
       renderReport(report);
       await loadPatch();
+      await loadApplies();
     }
 
     async function loadPatch() {
@@ -1279,6 +1446,7 @@ def _html() -> str:
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "历史记录读取失败");
         renderReport(payload.report);
+        state.activeRunId = runId;
         state.patch = payload.patch || "暂无补丁产物。";
         fullPatchButton.disabled = false;
         fullPatchPre.textContent = state.patch;
@@ -1286,10 +1454,116 @@ def _html() -> str:
           updateRepositoryIdentity(payload.metadata.repository);
         }
         renderDetailContent();
+        await loadApplies();
         showTab("current");
         showToast("历史分析已加载", "success");
       } catch (error) {
         showToast(`历史记录读取失败：${error.message}`, "error");
+      }
+    }
+
+    async function loadApplies() {
+      if (!state.activeRunId) {
+        setApplyState({});
+        return;
+      }
+      const response = await fetch(`/api/applies?run_id=${encodeURIComponent(state.activeRunId)}`);
+      const payload = await response.json();
+      if (!response.ok || payload.error) throw new Error(payload.error || "采纳状态读取失败");
+      setApplyState(payload);
+    }
+
+    function setApplyState(payload) {
+      state.applyRecords = payload.records || [];
+      state.appliedIssueIds = new Set(payload.applied_issue_ids || []);
+      state.latestApplyId = payload.latest_apply_id || "";
+      state.canRollback = Boolean(payload.can_rollback);
+      state.selectedGroups = new Set(
+        [...state.selectedGroups].filter(groupId => {
+          const group = issueGroups().find(item => item.id === groupId);
+          return group && !isGroupApplied(group);
+        })
+      );
+      renderIssues((state.report && state.report.issues) || []);
+      renderIssueDetail();
+      renderDetailContent();
+      renderSnapshotBanner();
+    }
+
+    function renderSnapshotBanner() {
+      const hasApplied = state.applyRecords.some(record => record.status === "applied");
+      snapshotBanner.classList.toggle("hidden", !hasApplied);
+      rollbackButton.disabled = !state.canRollback || state.applying;
+      rollbackButton.title = state.canRollback ? "恢复最近一次采纳前的源码" : "只能撤销该仓库最近一次有效采纳";
+    }
+
+    function openApplyDialog(issueIds) {
+      const unique = [...new Set(issueIds)].filter(Boolean);
+      if (!unique.length || !state.activeRunId) {
+        showToast("当前问题没有可安全采纳的修改", "warning");
+        return;
+      }
+      const selected = issueGroups().filter(group => patchIssueIds(group).some(id => unique.includes(id)));
+      const files = new Set(selected.map(group => group.primary.file_path));
+      state.pendingIssueIds = unique;
+      applySummary.innerHTML = `将删除 <strong>${selected.length}</strong> 处日志调用，涉及 <strong>${files.size}</strong> 个文件。<br>仅写入已生成的精确修改，不会执行模型文本建议。`;
+      applyDialog.classList.remove("hidden");
+      confirmApplyButton.focus();
+    }
+
+    function closeApplyConfirmation() {
+      if (state.applying) return;
+      applyDialog.classList.add("hidden");
+      state.pendingIssueIds = [];
+    }
+
+    async function submitApply() {
+      if (state.applying || !state.pendingIssueIds.length) return;
+      state.applying = true;
+      confirmApplyButton.disabled = true;
+      confirmApplyButton.textContent = "正在采纳...";
+      try {
+        const response = await fetch("/api/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: state.activeRunId, issue_ids: state.pendingIssueIds })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "采纳失败");
+        applyDialog.classList.add("hidden");
+        state.pendingIssueIds = [];
+        state.selectedGroups = new Set();
+        setApplyState(payload.applies || {});
+        showToast("修改已采纳，原文件已保存到用户数据目录", "success");
+      } catch (error) {
+        showToast(`采纳失败：${error.message}`, "error");
+      } finally {
+        state.applying = false;
+        confirmApplyButton.disabled = false;
+        confirmApplyButton.textContent = "确认采纳";
+        renderSnapshotBanner();
+      }
+    }
+
+    async function rollbackLatestApply() {
+      if (state.applying || !state.canRollback) return;
+      state.applying = true;
+      rollbackButton.disabled = true;
+      try {
+        const response = await fetch("/api/apply/rollback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apply_id: state.latestApplyId })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "撤销失败");
+        setApplyState(payload.applies || {});
+        showToast("上次采纳已撤销", "success");
+      } catch (error) {
+        showToast(`撤销失败：${error.message}`, "error");
+      } finally {
+        state.applying = false;
+        renderSnapshotBanner();
       }
     }
 
@@ -1408,12 +1682,18 @@ def _html() -> str:
     function renderEmpty() {
       state.report = null;
       state.patch = "";
+      state.activeRunId = "";
       state.selectedIssueId = "";
+      state.selectedGroups = new Set();
+      state.appliedIssueIds = new Set();
+      state.applyRecords = [];
       state.detailMode = "source";
       document.querySelector("#metrics").innerHTML = summaryMarkup(null);
       document.querySelector("#issues").innerHTML = '<div class="empty">暂无分析结果</div>';
       document.querySelector("#issueDetail").innerHTML = '<div class="muted">选择仓库并开始分析。</div>';
       fullPatchButton.disabled = true;
+      batchApplyButton.disabled = true;
+      snapshotBanner.classList.add("hidden");
       setDetailMode("source");
       renderDiagnostics();
     }
@@ -1422,6 +1702,9 @@ def _html() -> str:
       state.report = report;
       state.patch = "";
       state.selectedIssueId = (report.issues && report.issues[0] && report.issues[0].id) || "";
+      state.selectedGroups = new Set();
+      state.appliedIssueIds = new Set();
+      state.applyRecords = [];
       fullPatchButton.disabled = true;
       renderMetrics(report.summary);
       renderIssues(report.issues || []);
@@ -1466,21 +1749,78 @@ def _html() -> str:
 
     function renderIssues(issues) {
       const target = document.querySelector("#issues");
-      if (!issues.length) { target.innerHTML = '<div class="empty">未发现问题</div>'; return; }
-      target.innerHTML = issues.map(issue => `
-        <button class="issue-row ${issue.id === state.selectedIssueId ? "active" : ""}" type="button" data-issue-id="${esc(issue.id)}">
+      if (!issues.length) {
+        target.innerHTML = '<div class="empty">未发现问题</div>';
+        updateApplyControls();
+        return;
+      }
+      const groups = issueGroups();
+      target.innerHTML = groups.map(group => {
+        const issue = group.primary;
+        const applied = isGroupApplied(group);
+        const applicable = patchIssueIds(group).length > 0 && !applied;
+        return `
+        <div class="issue-row ${group.issues.some(item => item.id === state.selectedIssueId) ? "active" : ""}">
+          <label class="issue-select" title="${applicable ? "选择此修改" : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
           <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
-          <span><span class="issue-title">${esc(issue.title)}</span><span class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(ruleText(issue.kind))}</span></span>
-        </button>
-      `).join("");
-      target.querySelectorAll("button[data-issue-id]").forEach(button => {
+          <button class="issue-main" type="button" data-group-id="${esc(group.id)}"><span class="issue-title">${esc(issue.title)}${applied ? '<span class="issue-status">已采纳</span>' : ""}</span><span class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(ruleText(issue.kind))}</span></button>
+        </div>`;
+      }).join("");
+      target.querySelectorAll("button[data-group-id]").forEach(button => {
         button.addEventListener("click", () => {
-          state.selectedIssueId = button.dataset.issueId;
+          const group = issueGroups().find(item => item.id === button.dataset.groupId);
+          if (!group) return;
+          state.selectedIssueId = group.primary.id;
           renderIssues(state.report.issues || []);
           renderIssueDetail();
           renderDetailContent();
         });
       });
+      target.querySelectorAll("input[data-group-check]").forEach(input => {
+        input.addEventListener("change", () => {
+          if (input.checked) state.selectedGroups.add(input.dataset.groupCheck);
+          else state.selectedGroups.delete(input.dataset.groupCheck);
+          updateApplyControls();
+        });
+      });
+      updateApplyControls();
+    }
+
+    function issueGroups() {
+      const issues = (state.report && state.report.issues) || [];
+      const severityRank = { high: 3, medium: 2, low: 1 };
+      const groups = new Map();
+      issues.forEach(issue => {
+        const id = issue.log_call_id || issue.id;
+        if (!groups.has(id)) groups.set(id, { id, issues: [], primary: issue });
+        const group = groups.get(id);
+        group.issues.push(issue);
+        if ((severityRank[issue.severity] || 0) > (severityRank[group.primary.severity] || 0)) group.primary = issue;
+      });
+      return [...groups.values()];
+    }
+
+    function selectedIssueGroup() {
+      return issueGroups().find(group => group.issues.some(issue => issue.id === state.selectedIssueId)) || issueGroups()[0] || null;
+    }
+
+    function patchIssueIds(group) {
+      return group ? group.issues.filter(issue => issue.patch_action === "delete" && issue.source_line).map(issue => issue.id) : [];
+    }
+
+    function isGroupApplied(group) {
+      return group.issues.some(issue => state.appliedIssueIds.has(issue.id));
+    }
+
+    function updateApplyControls() {
+      const selected = issueGroups().filter(group => state.selectedGroups.has(group.id) && !isGroupApplied(group));
+      batchApplyButton.disabled = !selected.length || state.applying;
+      batchApplyButton.textContent = selected.length ? `批量采纳（${selected.length}）` : "批量采纳";
+      const group = selectedIssueGroup();
+      const applicable = group && patchIssueIds(group).length && !isGroupApplied(group);
+      applyIssueButton.classList.toggle("hidden", !group || !patchIssueIds(group).length);
+      applyIssueButton.disabled = !applicable || state.applying;
+      applyIssueButton.textContent = group && isGroupApplied(group) ? "已采纳" : "采纳此修改";
     }
 
     function renderIssueDetail() {
@@ -1492,7 +1832,7 @@ def _html() -> str:
       }
       detail.innerHTML = `
         <div>
-          <h3>${esc(issue.title)}</h3>
+          <h3>${esc(issue.title)}${state.appliedIssueIds.has(issue.id) ? '<span class="issue-status">已采纳</span>' : ""}</h3>
           <div class="meta">${esc(issue.file_path)}:${esc(issue.line)} · ${esc(sourceText(issue.source))}</div>
         </div>
         <div class="kv"><span>级别</span><strong class="${esc(issue.severity === "high" ? "danger" : issue.severity === "medium" ? "warning" : "success")}">${esc(severityText(issue.severity))}</strong></div>
@@ -1504,6 +1844,7 @@ def _html() -> str:
     function renderDetailContent() {
       const target = document.querySelector("#detailPre");
       target.textContent = state.detailMode === "patch" ? issuePatchText() : relatedCodeText();
+      updateApplyControls();
     }
 
     function selectedIssue() {
@@ -1531,7 +1872,8 @@ def _html() -> str:
     }
 
     function issuePatchText() {
-      const issue = selectedIssue();
+      const group = selectedIssueGroup();
+      const issue = group && (group.issues.find(item => item.patch_action === "delete" && item.source_line) || group.primary);
       if (!issue) return "选择一个问题查看修改预览。";
       const log = selectedIssueLog();
       const sourceLine = issue.source_line || (log && log.source_line) || "";

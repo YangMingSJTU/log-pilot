@@ -12,7 +12,6 @@ DEFAULT_EXCLUDES = [
     ".git",
     ".hg",
     ".svn",
-    ".logpilot",
     ".venv",
     "venv",
     "__pycache__",

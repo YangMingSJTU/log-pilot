@@ -14,10 +14,13 @@ flowchart LR
   H --> I["结构化 AI 分析结果"]
   C --> E["报告与 Patch 生成"]
   I --> E
-  E --> F["报告、问题与 Patch 展示"]
+  E --> J["用户应用数据目录"]
+  J --> F["报告、问题与 Patch 展示"]
+  F --> K["校验并采纳精确修改"]
+  K --> A
 ```
 
-图示说明：核心扫描能力不依赖 UI；规则分析留在本地进程，AI 分析批量交给选定的本机运行时。运行时只返回符合 JSON Schema 的结果，工作台负责展示扫描产物。
+图示说明：核心扫描能力不依赖 UI；规则分析留在本地进程，AI 分析批量交给选定的本机运行时。所有产物进入用户应用数据目录，只有用户确认采纳后才校验并修改目标源码。
 
 ## 模块划分
 
@@ -27,9 +30,10 @@ flowchart LR
 - `runtime` 发现并锁定 Codex/Claude 可执行文件，检测版本、健康状态并受控执行命令。
 - `ai` 构建批量日志 Prompt，校验结构化返回并转换为问题；配置默认关闭，UI 显式选择运行时后启用。
 - `reporting` 输出最新 `report.json` 和 `report.md`。
-- `history` 将每次扫描保存到 `.logpilot/runs/<run_id>/`，供历史记录页读取。
-- `patching` 只生成可审查 Diff，不直接改源码。
-- `web` 提供本地分析工作台，支持目录选择、运行时选择与状态页、一键扫描、历史记录、问题、AI trace 和 Patch 展示。
+- `storage` 按仓库规范化路径的 SHA-256 将产物隔离到用户应用数据目录。
+- `history` 将每次扫描保存到 `repositories/<repository_id>/runs/<run_id>/`。
+- `patching` 生成可审查 Diff，`remediation` 负责精确校验、原子采纳、备份和回滚。
+- `web` 提供目录与运行时选择、一键扫描、历史记录、问题审查、批量采纳和回滚。
 
 ## 运行时安全边界
 
@@ -37,6 +41,8 @@ flowchart LR
 - 所有命令使用参数数组直接启动，不经过 Shell 拼接；分析 Prompt 通过标准输入传递。
 - 单次扫描批量提交日志并设置超时，返回值必须符合预设 JSON Schema。
 - 可通过 `LOGPILOT_CODEX_PATH`、`LOGPILOT_CLAUDE_PATH` 固定可执行文件路径。
+- 扫描不写入目标仓库；`.logpilot.yaml` 仅作为可选的用户配置读取。
+- 采纳前校验原始行及上下文，事务备份统一保存在用户目录，源码变化时拒绝写入或回滚。
 
 ## MVP 约束
 

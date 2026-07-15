@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository implements the LogPilot Python CLI and local Web analysis workbench. Source code lives under `src/logpilot/`, tests live under `tests/`, product and architecture docs live under `docs/`, and examples live under `examples/`. Generated scan artifacts are written to `.logpilot/` and must stay ignored.
+This repository implements the LogPilot Python CLI and local Web analysis workbench. Source code lives under `src/logpilot/`, tests under `tests/`, product and architecture docs under `docs/`, and examples under `examples/`. Generated reports, history, patches, and apply backups belong in the user application data directory resolved by `src/logpilot/storage.py`; never write them into a scanned repository. A repository-local `.logpilot.yaml` is user configuration, not generated output.
 
 ## Build, Test, and Development Commands
 
@@ -12,6 +12,8 @@ Use the local Python runtime to install and validate the project:
 - `python -m unittest discover -s tests` runs the test suite.
 - `python -m logpilot runtimes` checks local Codex and Claude runtimes.
 - `python -m logpilot scan .` scans the current repository.
+- `python -m logpilot apply . --run latest` selects exact changes to apply.
+- `python -m logpilot rollback .` restores the latest unchanged apply transaction.
 - `python -m logpilot ui --path .` starts the local debug console.
 
 Run `git diff --check` before submitting changes. Runtime dependencies are tracked in `requirements.lock`; keep it updated when dependencies are added.
@@ -22,8 +24,8 @@ Use 4-space indentation for Python and keep modules focused around one responsib
 
 ## Testing Guidelines
 
-Tests use Python `unittest` and should be added under `tests/` with names such as `test_pipeline.py` or `test_config.py`. Cover parser behavior, rule findings, report generation, patch output, and Web artifact rendering. Use temporary directories for generated scan output.
+Tests use Python `unittest` and should be added under `tests/` with names such as `test_pipeline.py` or `test_remediation.py`. Cover parser behavior, rule findings, user-data storage, report generation, exact apply validation, atomic rollback, and Web rendering. Set `LOGPILOT_DATA_DIR` to a temporary directory so tests never pollute the real profile.
 
 ## Commit & Pull Request Guidelines
 
-The current history contains only `Initial commit`; continue with short, imperative commit subjects such as `Add scan pipeline` or `Improve report output`. Pull requests should include a concise summary, the commands or manual checks performed, and screenshots or diagrams when UI or visual documentation changes. Keep diagrams simple, proportional, and accompanied by a brief explanation.
+Use short, imperative commit subjects such as `Add remediation workflow` or `Improve report output`. Pull requests should include a concise summary, the commands or manual checks performed, and screenshots or diagrams when UI or visual documentation changes. Keep diagrams simple, proportional, and accompanied by a brief explanation.

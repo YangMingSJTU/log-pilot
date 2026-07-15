@@ -133,7 +133,7 @@ def _missing_exception_logs(repo_root: Path) -> list[Issue]:
     issues: list[Issue] = []
     for path in repo_root.rglob("*.py"):
         parts = set(path.relative_to(repo_root).parts)
-        if {".git", ".logpilot", ".venv", "venv", "__pycache__"}.intersection(parts):
+        if {".git", ".venv", "venv", "__pycache__"}.intersection(parts):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         lines = text.splitlines()
@@ -161,7 +161,7 @@ def _missing_exception_logs(repo_root: Path) -> list[Issue]:
                     log_call_id=None,
                     patch_action=None,
                     context=_source_context(lines, node.lineno),
-                    source_line=lines[node.lineno - 1].strip() if node.lineno <= len(lines) else "",
+                    source_line=lines[node.lineno - 1] if node.lineno <= len(lines) else "",
                 )
             )
     issues.extend(_missing_exception_logs_text(repo_root))
@@ -173,7 +173,7 @@ def _missing_exception_logs_text(repo_root: Path) -> list[Issue]:
     pattern = re.compile(r"\bcatch\s*\([^)]*\)\s*\{(?P<body>[^{}]*)\}", re.DOTALL)
     for path in list(repo_root.rglob("*.js")) + list(repo_root.rglob("*.ts")) + list(repo_root.rglob("*.java")):
         parts = set(path.relative_to(repo_root).parts)
-        if {".git", ".logpilot", ".venv", "venv", "node_modules", "dist", "build"}.intersection(parts):
+        if {".git", ".venv", "venv", "node_modules", "dist", "build"}.intersection(parts):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         lines = text.splitlines()
@@ -197,7 +197,7 @@ def _missing_exception_logs_text(repo_root: Path) -> list[Issue]:
                     log_call_id=None,
                     patch_action=None,
                     context=_source_context(lines, line),
-                    source_line=lines[line - 1].strip() if line <= len(lines) else "",
+                    source_line=lines[line - 1] if line <= len(lines) else "",
                 )
             )
     return issues
@@ -228,6 +228,8 @@ def _issue(
     suggestion: str,
     patch_action: str | None,
 ) -> Issue:
+    if patch_action and not log.safe_to_delete:
+        patch_action = None
     return Issue(
         id=f"{kind}:{log.id}",
         file_path=log.file_path,

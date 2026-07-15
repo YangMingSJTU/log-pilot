@@ -54,6 +54,11 @@ def _parse_python(path: Path, repo_root: Path, text: str) -> list[LogCall]:
     lines = text.splitlines()
     calls: list[LogCall] = []
     rel = relative_path(path, repo_root)
+    standalone_calls = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    }
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -62,7 +67,14 @@ def _parse_python(path: Path, repo_root: Path, text: str) -> list[LogCall]:
         if not callee:
             continue
         message = _python_message(node)
-        source_line = lines[node.lineno - 1].strip() if 0 < node.lineno <= len(lines) else ""
+        source_line = lines[node.lineno - 1] if 0 < node.lineno <= len(lines) else ""
+        end_line = int(getattr(node, "end_lineno", node.lineno) or node.lineno)
+        source_segment = ast.get_source_segment(text, node) or ""
+        safe_to_delete = (
+            id(node) in standalone_calls
+            and end_line == node.lineno
+            and source_line.strip() == source_segment.strip()
+        )
         calls.append(
             LogCall(
                 id=f"{rel}:{node.lineno}:{node.col_offset}",
@@ -75,6 +87,8 @@ def _parse_python(path: Path, repo_root: Path, text: str) -> list[LogCall]:
                 message=message,
                 context=_context(lines, node.lineno),
                 source_line=source_line,
+                end_line=end_line,
+                safe_to_delete=safe_to_delete,
             )
         )
     return calls
@@ -136,7 +150,9 @@ def _parse_text_language(path: Path, repo_root: Path, language: str, text: str) 
                 callee=callee,
                 message=_first_argument(match.group("args")),
                 context=_context(lines, index),
-                source_line=line.strip(),
+                source_line=line,
+                end_line=index,
+                safe_to_delete=bool(CALL_PATTERN.fullmatch(line.strip().removesuffix(";").strip())),
             )
         )
     return calls

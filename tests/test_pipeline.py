@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -15,8 +17,10 @@ if str(SRC) not in sys.path:
 
 from logpilot.config import load_config
 from logpilot.history import list_history_runs, load_history_run
+from logpilot.locking import repository_operation_lock
 from logpilot.pipeline import run_scan
 from logpilot.runtime import RuntimeExecution, RuntimeInfo
+from logpilot.storage import DATA_DIR_ENV, repository_data_dir
 import logpilot.web as web_module
 from logpilot.web import _html, build_server
 
@@ -60,6 +64,18 @@ class FakeRuntimeExecutor:
 
 
 class PipelineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.data_tmp = tempfile.TemporaryDirectory()
+        self.previous_data_dir = os.environ.get(DATA_DIR_ENV)
+        os.environ[DATA_DIR_ENV] = self.data_tmp.name
+
+    def tearDown(self) -> None:
+        if self.previous_data_dir is None:
+            os.environ.pop(DATA_DIR_ENV, None)
+        else:
+            os.environ[DATA_DIR_ENV] = self.previous_data_dir
+        self.data_tmp.cleanup()
+
     def test_scan_writes_report_and_patch_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -86,11 +102,13 @@ class PipelineTests(unittest.TestCase):
             )
 
             report = run_scan(repo)
-            report_json = repo / ".logpilot" / "report.json"
-            report_md = repo / ".logpilot" / "report.md"
-            patch = repo / ".logpilot" / "changes.diff"
-            history = list_history_runs(repo / ".logpilot")
+            data_dir = repository_data_dir(repo)
+            report_json = data_dir / "report.json"
+            report_md = data_dir / "report.md"
+            patch = data_dir / "changes.diff"
+            history = list_history_runs(data_dir)
 
+            self.assertFalse((repo / ".logpilot").exists())
             self.assertTrue(report_json.exists())
             self.assertTrue(report_md.exists())
             self.assertTrue(patch.exists())
@@ -111,10 +129,10 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("logger.info", first_log_issue["context"])
             exception_issue = next(issue for issue in payload["issues"] if issue["kind"] == "missing_exception_log")
             self.assertIn("except Exception", exception_issue["context"])
-            historical = load_history_run(repo / ".logpilot", history[0]["run_id"])
+            historical = load_history_run(data_dir, history[0]["run_id"])
             self.assertEqual(historical["metadata"]["issue_count"], len(report.issues))
             self.assertIn("report", historical)
-            self.assertIn("changes.diff", [path.name for path in (repo / ".logpilot" / "runs" / history[0]["run_id"]).iterdir()])
+            self.assertIn("changes.diff", [path.name for path in (data_dir / "runs" / history[0]["run_id"]).iterdir()])
 
     def test_config_loads_yaml_like_file_without_pyyaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,6 +196,10 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("相关代码", html)
         self.assertIn("修改预览", html)
         self.assertIn("完整修改", html)
+        self.assertIn("批量采纳", html)
+        self.assertIn("采纳此修改", html)
+        self.assertIn("撤销上次采纳", html)
+        self.assertIn("/api/apply", html)
         self.assertIn("分析诊断", html)
         self.assertNotIn('id="logsTab"', html)
         self.assertNotIn('id="aiTab"', html)
@@ -222,7 +244,8 @@ class PipelineTests(unittest.TestCase):
                 self.assertGreaterEqual(payload["report"]["summary"]["log_count"], 1)
                 self.assertEqual(len(payload["history"]), 1)
                 self.assertEqual(payload["history"][0]["runtime_id"], "codex")
-                self.assertTrue((repo / ".logpilot" / "report.json").exists())
+                self.assertTrue((repository_data_dir(repo) / "report.json").exists())
+                self.assertFalse((repo / ".logpilot").exists())
 
                 with urllib.request.urlopen(f"http://{host}:{port}/api/history", timeout=10) as history_response:
                     history_payload = json.loads(history_response.read().decode("utf-8"))
@@ -238,6 +261,70 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(run_response.status, 200)
                 self.assertEqual(run_payload["metadata"]["run_id"], run_id)
                 self.assertIn("patch", run_payload)
+
+                issue_id = next(
+                    issue["id"]
+                    for issue in payload["report"]["issues"]
+                    if issue.get("patch_action") == "delete"
+                )
+                apply_request = urllib.request.Request(
+                    f"http://{host}:{port}/api/apply",
+                    data=json.dumps({"run_id": run_id, "issue_ids": [issue_id]}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(apply_request, timeout=10) as apply_response:
+                    apply_payload = json.loads(apply_response.read().decode("utf-8"))
+                self.assertEqual(apply_response.status, 200)
+                self.assertNotIn("print('debug')", (repo / "service.py").read_text(encoding="utf-8"))
+
+                with urllib.request.urlopen(
+                    f"http://{host}:{port}/api/applies?run_id={run_id}",
+                    timeout=10,
+                ) as applies_response:
+                    applies_payload = json.loads(applies_response.read().decode("utf-8"))
+                self.assertIn(issue_id, applies_payload["applied_issue_ids"])
+                self.assertTrue(applies_payload["can_rollback"])
+
+                rollback_request = urllib.request.Request(
+                    f"http://{host}:{port}/api/apply/rollback",
+                    data=json.dumps({"apply_id": apply_payload["record"]["apply_id"]}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(rollback_request, timeout=10) as rollback_response:
+                    rollback_payload = json.loads(rollback_response.read().decode("utf-8"))
+                self.assertEqual(rollback_payload["record"]["status"], "rolled_back")
+                self.assertIn("print('debug')", (repo / "service.py").read_text(encoding="utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_web_scan_returns_conflict_when_repository_is_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.py").write_text("print('debug')\n", encoding="utf-8")
+            server = build_server(
+                repo,
+                port=0,
+                runtime_registry=FakeRuntimeRegistry(),
+                runtime_executor=FakeRuntimeExecutor(),
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                request = urllib.request.Request(
+                    f"http://{host}:{port}/api/scan",
+                    data=json.dumps({"path": str(repo)}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with repository_operation_lock(repo):
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(request, timeout=10)
+                self.assertEqual(raised.exception.code, 409)
+                raised.exception.close()
             finally:
                 server.shutdown()
                 server.server_close()
