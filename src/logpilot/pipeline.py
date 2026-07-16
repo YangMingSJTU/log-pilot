@@ -109,6 +109,7 @@ def run_scan(
             "failed_language_counts": scan.failed_language_counts,
             "unrecognized_extension_counts": scan.unrecognized_extension_counts,
             "analysis_scope": "custom" if app_settings.language_mode == "custom" else "repository",
+            "parse_failures": scan.parse_failures,
         }
         partial_report = build_report(
             repo_root,

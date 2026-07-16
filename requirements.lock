@@ -1,4 +1,5 @@
-# Runtime dependencies validated with the local Python 3.14 environment.
-tree-sitter==0.26.0
+# Validated as one compatibility set against the real C/C++ regression repository.
+# Do not upgrade one package independently without rerunning that regression.
+tree-sitter==0.25.2
 tree-sitter-c==0.24.2
 tree-sitter-cpp==0.23.4

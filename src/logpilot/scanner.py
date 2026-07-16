@@ -9,7 +9,8 @@ from typing import Callable
 
 from .config import ScanConfig
 from .languages import known_extensions, language_for_path, language_spec
-from .models import AnalysisTarget, LogCall
+from .models import AnalysisTarget, LogCall, ParseFailure
+from .native_parser_client import NativeParserClient
 from .parsers import parse_file_with_targets
 
 
@@ -25,7 +26,7 @@ class RepositoryScan:
     discovered_language_counts: dict[str, int]
     failed_language_counts: dict[str, int]
     selected_language_counts: dict[str, int]
-    parse_failures: list[dict[str, str]]
+    parse_failures: list[ParseFailure]
     unrecognized_extension_counts: dict[str, int]
 
     @property
@@ -60,6 +61,7 @@ def scan_repository_detailed(
     config: ScanConfig,
     progress: ScanFileProgress | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    native_client_factory: Callable[[], NativeParserClient] | None = None,
 ) -> RepositoryScan:
     repo_root = repo_root.resolve()
     logs: list[LogCall] = []
@@ -68,7 +70,7 @@ def scan_repository_detailed(
     discovered_counts: Counter[str] = Counter()
     failed_counts: Counter[str] = Counter()
     selected_counts: Counter[str] = Counter()
-    parse_failures: list[dict[str, str]] = []
+    parse_failures: list[ParseFailure] = []
     unrecognized_counts: Counter[str] = Counter()
     inventory_files = list(_iter_repository_files(repo_root, config))
     selected_extensions = set(config.include_extensions)
@@ -93,26 +95,46 @@ def scan_repository_detailed(
             source_files.append((path, language))
     total = len(source_files)
 
-    for index, (path, language) in enumerate(source_files, start=1):
-        if should_cancel and should_cancel():
-            raise InterruptedError("分析已取消。")
-        try:
-            parsed_logs, parsed_targets = parse_file_with_targets(path, repo_root, language)
-        except Exception as exc:
-            failed_counts[language] += 1
-            parse_failures.append(
-                {
-                    "file_path": path.relative_to(repo_root).as_posix(),
-                    "language": language,
-                    "error": str(exc),
-                }
-            )
-        else:
-            file_counts[language] += 1
-            logs.extend(parsed_logs)
-            targets.extend(parsed_targets)
-        if progress:
-            progress(index, total, path.relative_to(repo_root).as_posix())
+    native_client = None
+    try:
+        for index, (path, language) in enumerate(source_files, start=1):
+            rel = path.relative_to(repo_root).as_posix()
+            if should_cancel and should_cancel():
+                raise InterruptedError("分析已取消。")
+            try:
+                if language in {"c", "cpp"}:
+                    if native_client is None:
+                        native_client = (native_client_factory or NativeParserClient)()
+                    result = native_client.parse_file(path, repo_root, language, should_cancel)
+                    if result.failure:
+                        failed_counts[language] += 1
+                        parse_failures.append(result.failure)
+                        continue
+                    parsed_logs, parsed_targets = result.logs, result.targets
+                else:
+                    parsed_logs, parsed_targets = parse_file_with_targets(path, repo_root, language)
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                failed_counts[language] += 1
+                parse_failures.append(
+                    ParseFailure(
+                        file_path=rel,
+                        language=language,
+                        error_kind="parse_error",
+                        message=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+            else:
+                file_counts[language] += 1
+                logs.extend(parsed_logs)
+                targets.extend(parsed_targets)
+            finally:
+                if progress:
+                    progress(index, total, rel)
+    finally:
+        if native_client is not None:
+            native_client.close()
 
     return RepositoryScan(
         logs=logs,

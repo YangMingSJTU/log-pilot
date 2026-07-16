@@ -49,4 +49,4 @@ python -m logpilot scan . --runtime codex
 python -m logpilot ui --path .
 ```
 
-The local Web UI exposes repository selection, runtime-backed scanning, history, exact patch apply, and rollback endpoints. C and C++ parsing uses the pinned Tree-sitter packages in `requirements.lock`; the Web and CLI boundaries remain lightweight Python modules.
+The local Web UI exposes repository selection, runtime-backed scanning, history, exact patch apply, and rollback endpoints. C and C++ parsing runs in a reusable isolated worker process, so a native parser crash is recorded against the current file without terminating the Web service. The Tree-sitter versions in `requirements.lock` are a tested compatibility set and must be upgraded together only after the real C/C++ regression scan passes.

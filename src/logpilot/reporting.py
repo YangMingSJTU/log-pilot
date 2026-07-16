@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .languages import LANGUAGE_SPECS
-from .models import AiTrace, Issue, LanguageCoverage, LogCall, ScanReport, ScanSummary, Severity
+from .models import AiTrace, Issue, LanguageCoverage, LogCall, ParseFailure, ScanReport, ScanSummary, Severity
 
 
 def build_report(
@@ -22,6 +22,7 @@ def build_report(
     analysis_scope: str = "repository",
     ai_status: str | None = None,
     language_insights: list[dict[str, object]] | None = None,
+    parse_failures: list[ParseFailure] | None = None,
 ) -> ScanReport:
     severity_counts = {severity.value: 0 for severity in Severity}
     for issue in issues:
@@ -84,6 +85,7 @@ def build_report(
         issues=issues,
         ai_traces=ai_traces,
         language_insights=list(language_insights or []),
+        parse_failures=list(parse_failures or []),
     )
 
 
@@ -113,9 +115,17 @@ def render_markdown(report: ScanReport) -> str:
         f"- Severity: high={summary.severity_counts.get('high', 0)}, "
         f"medium={summary.severity_counts.get('medium', 0)}, low={summary.severity_counts.get('low', 0)}",
         "",
-        "## Issues",
+        "## Parse failures",
         "",
     ]
+    if not report.parse_failures:
+        lines.append("No parse failures.")
+    for failure in report.parse_failures:
+        exit_code = f"; exit_code={failure.worker_exit_code}" if failure.worker_exit_code is not None else ""
+        lines.append(
+            f"- `{failure.file_path}` `{failure.error_kind}` - {failure.message}{exit_code}"
+        )
+    lines.extend(["", "## Issues", ""])
     if not report.issues:
         lines.append("No issues found.")
     for issue in report.issues:

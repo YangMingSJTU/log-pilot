@@ -54,6 +54,16 @@ class LanguageCoverage:
 
 
 @dataclass(slots=True)
+class ParseFailure:
+    file_path: str
+    language: str
+    error_kind: str
+    message: str
+    worker_exit_code: int | None = None
+    recoverable: bool = True
+
+
+@dataclass(slots=True)
 class FixProposal:
     id: str
     action: str
@@ -129,6 +139,7 @@ class ScanReport:
     issues: list[Issue] = field(default_factory=list)
     ai_traces: list[AiTrace] = field(default_factory=list)
     language_insights: list[dict[str, Any]] = field(default_factory=list)
+    parse_failures: list[ParseFailure] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

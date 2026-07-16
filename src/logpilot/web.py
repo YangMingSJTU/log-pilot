@@ -933,6 +933,10 @@ def _html() -> str:
     .coverage-banner { color: #f6d572; font-size: 11px; }
     .coverage-banner strong { color: #fff; }
     .coverage-banner.complete { border-color: rgba(52, 211, 153, .28); background: rgba(52, 211, 153, .06); color: var(--green); }
+    .coverage-banner.failure { display: block; border-color: rgba(251, 113, 133, .34); background: rgba(251, 113, 133, .07); color: #fecdd3; }
+    .coverage-failure-list { display: grid; gap: 5px; margin-top: 8px; color: var(--muted); }
+    .coverage-failure-list span { min-width: 0; overflow-wrap: anywhere; }
+    .coverage-failure-list code { color: #fff; font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; }
     .section-bar {
       min-height: 48px;
       display: flex;
@@ -2083,7 +2087,7 @@ def _html() -> str:
         } else if (payload.has_report) await loadReport();
         else renderEmpty();
       } catch (error) {
-        showToast(`初始化失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "初始化失败"), "error");
         renderEmpty();
       }
     }
@@ -2109,7 +2113,7 @@ def _html() -> str:
         state.runtimes = [];
         state.selectedRuntime = "";
         renderRuntimes();
-        if (refresh) showToast(`刷新失败：${error.message}`, "error");
+        if (refresh) showToast(await requestFailureMessage(error, "刷新失败"), "error");
       } finally {
         refreshRuntimesButton.disabled = false;
       }
@@ -2138,7 +2142,7 @@ def _html() -> str:
         }
         renderRepositorySettings(payload.repository || target);
       } catch (error) {
-        if (!quiet) showToast(`设置读取失败：${error.message}`, "error");
+        if (!quiet) showToast(await requestFailureMessage(error, "设置读取失败"), "error");
       } finally {
         state.settingsBusy = false;
         updateSettingsBusy();
@@ -2176,7 +2180,7 @@ def _html() -> str:
         if (!quiet) showToast("仓库设置已保存", "success");
         return true;
       } catch (error) {
-        showToast(`保存失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "保存失败"), "error");
         return false;
       } finally {
         state.settingsBusy = false;
@@ -2202,7 +2206,7 @@ def _html() -> str:
         renderRepositorySettings(payload.repository);
         showToast("语言与日志模板推荐已更新", "success");
       } catch (error) {
-        showToast(`识别失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "识别失败"), "error");
       } finally {
         state.settingsBusy = false;
         updateSettingsBusy();
@@ -2229,8 +2233,10 @@ def _html() -> str:
         await loadRepositorySettings(state.path, true);
         showToast("仓库路径已更新", "success");
       } catch (error) {
-        const message = error.name === "AbortError" ? "选择窗口超时，请手动输入路径或重试。" : error.message;
-        showToast(`选择失败：${message}`, "error");
+        const message = error.name === "AbortError"
+          ? "选择失败：选择窗口超时，请手动输入路径或重试。"
+          : await requestFailureMessage(error, "选择失败");
+        showToast(message, "error");
       } finally {
         clearTimeout(timeoutId);
         setBrowsing(false);
@@ -2271,9 +2277,10 @@ def _html() -> str:
         if (response.status === 409) showToast("已恢复该仓库正在执行的分析任务", "info");
         await pollScanJob(runtime);
       } catch (error) {
-        showToast(`分析失败：${error.message}`, "error");
+        const message = await requestFailureMessage(error, "分析失败");
+        showToast(message, "error");
         setScanning(false);
-        markScanProgressFailed(error.message);
+        markScanProgressFailed(message);
       }
     }
 
@@ -2300,8 +2307,9 @@ def _html() -> str:
         await pollScanJob(runtime);
       } catch (error) {
         setScanning(false);
-        markScanProgressFailed(error.message);
-        showToast(`分析失败：${error.message}`, "error");
+        const message = await requestFailureMessage(error, "分析失败");
+        markScanProgressFailed(message);
+        showToast(message, "error");
       }
     }
 
@@ -2371,7 +2379,7 @@ def _html() -> str:
         state.scanCancelRequested = false;
         cancelScanButton.disabled = false;
         cancelScanButton.textContent = "停止分析";
-        showToast(`停止失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "停止失败"), "error");
       }
     }
 
@@ -2482,7 +2490,7 @@ def _html() -> str:
         showTab("current");
         showToast("历史分析已加载", "success");
       } catch (error) {
-        showToast(`历史记录读取失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "历史记录读取失败"), "error");
       }
     }
 
@@ -2562,7 +2570,7 @@ def _html() -> str:
         setApplyState(payload.applies || {});
         showToast("修改已采纳，原文件已保存到用户数据目录", "success");
       } catch (error) {
-        showToast(`采纳失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "采纳失败"), "error");
       } finally {
         state.applying = false;
         confirmApplyButton.disabled = false;
@@ -2586,7 +2594,7 @@ def _html() -> str:
         setApplyState(payload.applies || {});
         showToast("上次采纳已撤销", "success");
       } catch (error) {
-        showToast(`撤销失败：${error.message}`, "error");
+        showToast(await requestFailureMessage(error, "撤销失败"), "error");
       } finally {
         state.applying = false;
         renderSnapshotBanner();
@@ -2609,6 +2617,19 @@ def _html() -> str:
           window.setTimeout(() => toast.remove(), 170);
         }, hideAfter);
       }
+    }
+
+    async function requestFailureMessage(error, action) {
+      const detail = String(error?.message || "").trim();
+      const networkFailure = error instanceof TypeError || /network|fetch/i.test(detail);
+      if (!networkFailure) return `${action}：${detail || "未知错误"}`;
+      try {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (response.ok) return `${action}，本地服务仍在线，请重试。`;
+      } catch (_stateError) {
+        // The state probe is the final distinction between an endpoint failure and a stopped service.
+      }
+      return "本地 LogPilot 服务已退出，请重新启动服务";
     }
 
     function setScanning(value) {
@@ -3136,12 +3157,28 @@ def _html() -> str:
       const languages = summary.language_coverage || [];
       const unsupported = languages.filter(item => item.support_level === "unsupported" && item.discovered_files > 0);
       const failed = languages.filter(item => item.failed_files > 0);
+      const parseFailures = state.report?.parse_failures || [];
       const unrecognized = summary.unrecognized_extensions || {};
       const complete = summary.coverage_status === "complete";
       const fullyHealthyContext = complete && summary.ai_status === "complete" && ["scored", "scoped"].includes(summary.score_status);
       coverageBanner.classList.toggle("hidden", fullyHealthyContext);
       coverageBanner.classList.toggle("complete", fullyHealthyContext);
-      if (unsupported.length || Object.keys(unrecognized).length) {
+      coverageBanner.classList.toggle("failure", parseFailures.length > 0);
+      if (parseFailures.length) {
+        const visible = parseFailures.slice(0, 5).map(failure => {
+          const kind = ({
+            parse_error: "解析错误",
+            native_crash: "原生进程崩溃",
+            timeout: "解析超时",
+            protocol_error: "通信错误",
+            worker_start_failed: "进程启动失败"
+          })[failure.error_kind] || failure.error_kind;
+          const reason = String(failure.message || "未知原因").slice(0, 180);
+          return `<span><code>${esc(failure.file_path)}</code> · ${esc(kind)} · ${esc(reason)}</span>`;
+        }).join("");
+        const remaining = parseFailures.length > 5 ? `<span>其余 ${parseFailures.length - 5} 个失败文件请查看报告。</span>` : "";
+        coverageBanner.innerHTML = `<strong>有 ${parseFailures.length} 个文件解析失败</strong><div class="coverage-failure-list">${visible}${remaining}</div>`;
+      } else if (unsupported.length || Object.keys(unrecognized).length) {
         const details = unsupported.map(item => `${item.label} ${item.discovered_files} 个文件`);
         Object.entries(unrecognized).forEach(([extension, count]) => details.push(`未知扩展 ${extension} ${count} 个文件`));
         const detail = details.join("、");
