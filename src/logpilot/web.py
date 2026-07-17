@@ -33,17 +33,18 @@ from .settings import (
     save_repository_settings,
     settings_payload,
 )
-from .storage import repository_data_dir
+from .storage import load_last_repository, repository_data_dir, save_last_repository
 
 
 def build_server(
-    repo_root: Path,
+    repo_root: Path | None,
     host: str = "127.0.0.1",
     port: int = 8765,
     runtime_registry: RuntimeRegistry | None = None,
     runtime_executor: RuntimeExecutor | None = None,
 ) -> ThreadingHTTPServer:
-    initial_root = repo_root.resolve()
+    initial_root = _initial_repository(repo_root)
+    save_last_repository(initial_root)
     state: dict[str, Any] = {
         "repo_root": initial_root,
         "artifacts": repository_data_dir(initial_root),
@@ -55,6 +56,13 @@ def build_server(
     scan_jobs: dict[str, ScanJob] = {}
     scan_jobs_lock = threading.Lock()
 
+    def activate_repository(target: Path, runtime_id: str | None = None) -> None:
+        resolved = save_last_repository(target)
+        state["repo_root"] = resolved
+        state["artifacts"] = repository_data_dir(resolved)
+        if runtime_id is not None:
+            state["runtime_id"] = runtime_id
+
     def execute_scan_job(job: ScanJob, target: Path, runtime) -> None:
         try:
             report = run_scan(
@@ -65,9 +73,7 @@ def build_server(
                 progress=job.update,
                 should_cancel=job.should_cancel,
             )
-            state["repo_root"] = target.resolve()
-            state["artifacts"] = repository_data_dir(target)
-            state["runtime_id"] = runtime.id
+            activate_repository(target, runtime.id)
             history = list_history_runs(state["artifacts"])
             run_id = str(history[0].get("run_id", "")) if history else ""
             job.complete(report, run_id)
@@ -130,6 +136,8 @@ def build_server(
                 self._handle_settings_save()
             elif parsed.path == "/api/settings/profile":
                 self._handle_settings_profile()
+            elif parsed.path == "/api/repository":
+                self._handle_repository_select()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -273,15 +281,33 @@ def build_server(
                 )
                 return
             try:
-                selected = choose_directory(state["repo_root"])
+                payload = self._read_json()
+                initial_dir = _browse_initial_directory(
+                    str(payload.get("path", "")),
+                    state["repo_root"],
+                )
+                selected = choose_directory(initial_dir)
                 if not selected:
                     self._send_json({"cancelled": True, "path": ""})
                     return
-                self._send_json({"cancelled": False, "path": str(selected)})
+                resolved = _validate_repository(selected)
+                activate_repository(resolved)
+                self._send_json({"cancelled": False, "path": str(resolved), **_state_payload(state)})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
                 browse_lock.release()
+
+        def _handle_repository_select(self) -> None:
+            try:
+                payload = self._read_json()
+                target = _validate_repository(_resolve_repo_path(str(payload.get("path", ""))))
+                activate_repository(target)
+                self._send_json(_state_payload(state))
+            except (OSError, ValueError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_settings_save(self) -> None:
             try:
@@ -365,17 +391,43 @@ def build_server(
     return ThreadingHTTPServer((host, port), Handler)
 
 
-def serve(repo_root: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
-    server = build_server(repo_root, host, port)
-    artifacts = repository_data_dir(repo_root)
+def serve(repo_root: Path | None, host: str = "127.0.0.1", port: int = 8765) -> None:
+    initial_root = _initial_repository(repo_root)
+    server = build_server(initial_root, host, port)
+    artifacts = repository_data_dir(initial_root)
     print(f"LogPilot UI: http://{host}:{port}")
-    print(f"Default repository: {repo_root.resolve()}")
+    print(f"Default repository: {initial_root}")
     print(f"Reading artifacts from: {artifacts}")
     server.serve_forever()
 
 
 def choose_directory(initial_dir: Path) -> Path | None:
     return _choose_directory_tk_subprocess(initial_dir)
+
+
+def _initial_repository(repo_root: Path | None) -> Path:
+    fallback = Path.cwd() if repo_root is None else repo_root
+    if repo_root is None:
+        return load_last_repository(fallback)
+    return _validate_repository(repo_root)
+
+
+def _validate_repository(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_dir():
+        raise ValueError(f"仓库路径不存在：{resolved}")
+    return resolved
+
+
+def _browse_initial_directory(raw_path: str, fallback: Path) -> Path:
+    candidate = Path(raw_path.strip()).expanduser() if raw_path.strip() else fallback
+    candidate = candidate.resolve()
+    if candidate.is_file():
+        return candidate.parent
+    current = candidate
+    while not current.is_dir() and current != current.parent:
+        current = current.parent
+    return current if current.is_dir() else _validate_repository(fallback)
 
 
 def _choose_directory_tk_subprocess(initial_dir: Path, timeout_seconds: int = 120) -> Path | None:
@@ -1936,7 +1988,7 @@ def _html() -> str:
     repoPath.addEventListener("keydown", event => {
       if (event.key === "Enter") startScan(repoPath.value);
     });
-    repoPath.addEventListener("change", () => loadRepositorySettings(repoPath.value, true));
+    repoPath.addEventListener("change", () => activateRepository(repoPath.value));
     currentTab.addEventListener("click", () => showTab("current"));
     historyTab.addEventListener("click", () => showTab("history"));
     settingsTab.addEventListener("click", () => {
@@ -2119,6 +2171,42 @@ def _html() -> str:
       }
     }
 
+    async function activateRepository(path, quiet = false) {
+      const target = String(path || "").trim();
+      if (!target) {
+        showToast("请先输入或选择本地仓库路径", "warning");
+        return false;
+      }
+      try {
+        const response = await fetch("/api/repository", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: target })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "仓库切换失败");
+        await applyRepositoryState(payload);
+        if (!quiet) showToast("仓库路径已记住", "success");
+        return true;
+      } catch (error) {
+        repoPath.value = state.path;
+        showToast(await requestFailureMessage(error, "仓库切换失败"), "error");
+        return false;
+      }
+    }
+
+    async function applyRepositoryState(payload) {
+      state.path = payload.repository || payload.path || state.path;
+      state.history = payload.history || [];
+      state.activeRunId = state.history[0]?.run_id || "";
+      repoPath.value = state.path;
+      updateRepositoryIdentity(state.path);
+      await loadRepositorySettings(state.path, true);
+      renderHistory(state.history);
+      if (payload.has_report) await loadReport();
+      else renderEmpty();
+    }
+
     async function loadRepositorySettings(path, quiet = false) {
       const target = String(path || "").trim();
       if (!target || state.settingsBusy) return;
@@ -2220,18 +2308,20 @@ def _html() -> str:
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 125000);
       try {
-        const response = await fetch("/api/browse", { method: "POST", signal: controller.signal });
+        const response = await fetch("/api/browse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: repoPath.value.trim() }),
+          signal: controller.signal
+        });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || "选择仓库失败");
         if (payload.cancelled) {
           showToast("已取消选择", "info");
           return;
         }
-        state.path = payload.path;
-        repoPath.value = payload.path;
-        updateRepositoryIdentity(state.path);
-        await loadRepositorySettings(state.path, true);
-        showToast("仓库路径已更新", "success");
+        await applyRepositoryState(payload);
+        showToast("仓库路径已更新并记住", "success");
       } catch (error) {
         const message = error.name === "AbortError"
           ? "选择失败：选择窗口超时，请手动输入路径或重试。"
@@ -2250,6 +2340,7 @@ def _html() -> str:
         showToast("请先输入或选择本地仓库路径", "warning");
         return;
       }
+      if (target !== state.path && !await activateRepository(target, true)) return;
       const runtime = selectedRuntime();
       if (!runtime) {
         showToast("没有可用运行时，请先在运行时页面检查 Codex 或 Claude", "warning");

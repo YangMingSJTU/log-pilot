@@ -14,7 +14,7 @@ Use the local Python runtime to install and validate the project:
 - `python -m logpilot scan .` scans the current repository.
 - `python -m logpilot apply . --run latest` selects exact changes to apply.
 - `python -m logpilot rollback .` restores the latest unchanged apply transaction.
-- `python -m logpilot ui --path .` starts the local debug console.
+- `python -m logpilot ui` starts the local console and restores the last selected repository; add `--path .` to override it.
 
 Run `git diff --check` before submitting changes. Runtime dependencies are tracked in `requirements.lock`; keep it updated when dependencies are added. Treat the three Tree-sitter pins as one compatibility set and never upgrade one without running the real C/C++ regression scan.
 

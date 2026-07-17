@@ -22,7 +22,7 @@ from logpilot.locking import repository_operation_lock
 from logpilot.pipeline import run_scan
 from logpilot.runtime import RuntimeExecution, RuntimeInfo
 from logpilot.settings import save_repository_settings
-from logpilot.storage import DATA_DIR_ENV, repository_data_dir
+from logpilot.storage import DATA_DIR_ENV, load_last_repository, repository_data_dir
 import logpilot.web as web_module
 from logpilot.web import _html, build_server
 
@@ -229,6 +229,8 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("LogPilot 本地分析工作台", html)
         self.assertIn("repoPath", html)
         self.assertIn("browseButton", html)
+        self.assertIn("/api/repository", html)
+        self.assertIn('body: JSON.stringify({ path: repoPath.value.trim() })', html)
         self.assertIn("开始分析", html)
         self.assertIn('class="sidebar"', html)
         self.assertIn("仓库分析", html)
@@ -570,10 +572,12 @@ class PipelineTests(unittest.TestCase):
                 server.server_close()
 
     def test_web_browse_endpoint_returns_selected_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
+        with tempfile.TemporaryDirectory() as first_tmp, tempfile.TemporaryDirectory() as current_tmp:
+            repo = Path(first_tmp)
+            current = Path(current_tmp)
+            opened_from: list[Path] = []
             original_choose_directory = web_module.choose_directory
-            web_module.choose_directory = lambda initial_dir: repo
+            web_module.choose_directory = lambda initial_dir: opened_from.append(initial_dir) or current
             server = build_server(repo, port=0)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -581,7 +585,7 @@ class PipelineTests(unittest.TestCase):
                 host, port = server.server_address
                 request = urllib.request.Request(
                     f"http://{host}:{port}/api/browse",
-                    data=b"{}",
+                    data=json.dumps({"path": str(current)}).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
@@ -589,11 +593,52 @@ class PipelineTests(unittest.TestCase):
                     payload = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(response.status, 200)
                 self.assertFalse(payload["cancelled"])
-                self.assertEqual(payload["path"], str(repo))
+                self.assertEqual(payload["path"], str(current))
+                self.assertEqual(opened_from, [current.resolve()])
+                self.assertEqual(load_last_repository(repo), current.resolve())
+
+                with urllib.request.urlopen(f"http://{host}:{port}/api/state", timeout=10) as response:
+                    state = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(state["repository"], str(current.resolve()))
             finally:
                 web_module.choose_directory = original_choose_directory
                 server.shutdown()
                 server.server_close()
+
+    def test_web_repository_switch_is_remembered_across_server_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as first_tmp, tempfile.TemporaryDirectory() as second_tmp:
+            first = Path(first_tmp)
+            second = Path(second_tmp)
+            server = build_server(first, port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                request = urllib.request.Request(
+                    f"http://{host}:{port}/api/repository",
+                    data=json.dumps({"path": str(second)}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["repository"], str(second.resolve()))
+                self.assertEqual(load_last_repository(first), second.resolve())
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            restored_server = build_server(None, port=0)
+            restored_thread = threading.Thread(target=restored_server.serve_forever, daemon=True)
+            restored_thread.start()
+            try:
+                host, port = restored_server.server_address
+                with urllib.request.urlopen(f"http://{host}:{port}/api/state", timeout=10) as response:
+                    restored = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(restored["repository"], str(second.resolve()))
+            finally:
+                restored_server.shutdown()
+                restored_server.server_close()
 
 
 if __name__ == "__main__":

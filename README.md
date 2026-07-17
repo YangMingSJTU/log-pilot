@@ -46,7 +46,7 @@ python -m pip install -e .
 python -m unittest discover -s tests
 python -m logpilot runtimes
 python -m logpilot scan . --runtime codex
-python -m logpilot ui --path .
+python -m logpilot ui
 ```
 
-The local Web UI exposes repository selection, runtime-backed scanning, history, exact patch apply, and rollback endpoints. C and C++ parsing runs in a reusable isolated worker process, so a native parser crash is recorded against the current file without terminating the Web service. The Tree-sitter versions in `requirements.lock` are a tested compatibility set and must be upgraded together only after the real C/C++ regression scan passes.
+The local Web UI remembers the most recently selected repository in the user application data directory. Use `--path <repository>` only when you want to override that remembered path for startup. The folder picker opens from the path currently entered in the workbench. C and C++ parsing runs in a reusable isolated worker process, so a native parser crash is recorded against the current file without terminating the Web service. The Tree-sitter versions in `requirements.lock` are a tested compatibility set and must be upgraded together only after the real C/C++ regression scan passes.

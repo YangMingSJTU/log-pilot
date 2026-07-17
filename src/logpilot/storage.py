@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 DATA_DIR_ENV = "LOGPILOT_DATA_DIR"
+UI_STATE_FILE = "ui-state.json"
 
 
 def app_data_root() -> Path:
@@ -36,6 +37,33 @@ def repository_id(repo_root: Path) -> str:
 
 def repository_data_dir(repo_root: Path) -> Path:
     return app_data_root() / "repositories" / repository_id(repo_root)
+
+
+def load_last_repository(fallback: Path) -> Path:
+    resolved_fallback = fallback.expanduser().resolve()
+    state_path = app_data_root() / UI_STATE_FILE
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        candidate = Path(str(payload["last_repository"])).expanduser().resolve()
+    except (FileNotFoundError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return resolved_fallback
+    return candidate if candidate.is_dir() else resolved_fallback
+
+
+def save_last_repository(repo_root: Path) -> Path:
+    resolved = repo_root.expanduser().resolve()
+    if not resolved.is_dir():
+        raise ValueError(f"Repository path does not exist: {resolved}")
+    root = app_data_root()
+    root.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        root / UI_STATE_FILE,
+        {
+            "last_repository": str(resolved),
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    )
+    return resolved
 
 
 def initialize_repository_storage(repo_root: Path) -> Path:

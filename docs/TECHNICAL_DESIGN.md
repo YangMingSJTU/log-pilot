@@ -34,7 +34,7 @@ flowchart LR
 - `runtime` 发现并锁定 Codex/Claude 可执行文件，检测版本、健康状态并受控执行命令。
 - `ai` 分层执行自定义日志框架识别、已知日志质量审查、异常路径缺失日志分析和未支持语言抽样；返回值必须匹配本地目标 ID，成功响应按运行时版本与 Prompt 缓存。
 - `reporting` 输出最新 `report.json` 和 `report.md`，并根据覆盖度、日志样本和 AI 完整性决定是否生成数值评分。
-- `storage` 按仓库规范化路径的 SHA-256 将产物隔离到用户应用数据目录。
+- `storage` 按仓库规范化路径的 SHA-256 将产物隔离到用户应用数据目录，并通过 `ui-state.json` 保存最近使用的仓库。
 - `settings` 保存仓库级语言选择与固定日志模板，并根据文件及现有日志生成语言画像和模板推荐。
 - `fixes` 将规则问题转换为统一的删除、替换或插入修复；Python 异常日志会在 AST 语法校验通过后才成为可采纳项。
 - `history` 将每次扫描保存到 `repositories/<repository_id>/runs/<run_id>/`。

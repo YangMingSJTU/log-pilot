@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> None:
     report_parser.set_defaults(func=_report)
 
     ui_parser = subparsers.add_parser("ui", help="Start the local Web debug console.")
-    ui_parser.add_argument("--path", default=".", help="Default repository path.")
+    ui_parser.add_argument("--path", default=None, help="Repository path. Defaults to the last selected repository.")
     ui_parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
     ui_parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
     ui_parser.set_defaults(func=_ui)
@@ -87,7 +87,7 @@ def _report(args) -> None:
 
 
 def _ui(args) -> None:
-    serve(Path(args.path), host=args.host, port=args.port)
+    serve(Path(args.path) if args.path else None, host=args.host, port=args.port)
 
 
 def _runtimes(args) -> None:
