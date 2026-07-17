@@ -1043,7 +1043,25 @@ def _html() -> str:
       font-size: 12px;
     }
     .result-search input:focus { border: 0; }
-    .severity-filters {
+    .filter-controls {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .filter-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .filter-label {
+      color: var(--subtle);
+      font-size: 9px;
+      font-weight: 650;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .severity-filters, .action-filters {
       display: flex;
       align-items: center;
       padding: 3px;
@@ -1051,7 +1069,7 @@ def _html() -> str:
       border-radius: 6px;
       background: var(--surface-2);
     }
-    .severity-filter {
+    .severity-filter, .action-filter {
       height: 28px;
       padding: 0 9px;
       border: 0;
@@ -1061,8 +1079,10 @@ def _html() -> str:
       font-size: 10px;
       box-shadow: none;
     }
-    .severity-filter:hover { border: 0; background: #202024; color: var(--ink); }
-    .severity-filter.active { background: #2a2435; color: #fff; box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .18); }
+    .severity-filter:hover, .action-filter:hover { border: 0; background: #202024; color: var(--ink); }
+    .severity-filter.active, .action-filter.active { background: #2a2435; color: #fff; box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .18); }
+    .filter-count { margin-left: 4px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+    .active .filter-count { color: #c4b5fd; }
     .toolbar-actions, .file-header-actions, .file-fold-actions { display: flex; align-items: center; gap: 7px; }
     .file-header-actions { justify-content: flex-end; }
     .file-fold-actions { gap: 4px; }
@@ -1156,6 +1176,18 @@ def _html() -> str:
     .result-toggle:hover { border: 0; background: transparent; }
     .result-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .result-title { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .action-chip {
+      flex: 0 0 auto;
+      padding: 2px 6px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 650;
+    }
+    .action-chip.add { border-color: rgba(52, 211, 153, .32); color: #6ee7b7; }
+    .action-chip.delete { border-color: rgba(251, 113, 133, .32); color: #fda4af; }
+    .action-chip.modify { border-color: rgba(96, 165, 250, .32); color: #93c5fd; }
     .issue-status { flex: 0 0 auto; color: var(--green); font-size: 10px; font-weight: 600; }
     .issue-status.muted { color: var(--subtle); }
     .result-rules { margin-top: 6px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
@@ -1563,6 +1595,15 @@ def _html() -> str:
       to { transform: translateX(360%); }
     }
 
+    @media (max-width: 1320px) {
+      .results-toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas: "search action" "filters filters";
+      }
+      .result-search { grid-area: search; }
+      .filter-controls { grid-area: filters; justify-self: start; flex-wrap: wrap; }
+      .toolbar-actions { grid-area: action; }
+    }
     @media (max-width: 1080px) {
       .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
       main { grid-column: 2; }
@@ -1604,7 +1645,7 @@ def _html() -> str:
         grid-template-areas: "search action" "filters filters";
       }
       .result-search { grid-area: search; }
-      .severity-filters { grid-area: filters; justify-self: start; }
+      .filter-controls { grid-area: filters; justify-self: start; flex-wrap: wrap; }
       .toolbar-actions { grid-area: action; }
       .batch-bar { left: 50%; bottom: 16px; width: calc(100vw - 32px); }
       .history-header { display: none; }
@@ -1649,6 +1690,10 @@ def _html() -> str:
         grid-template-columns: minmax(0, 1fr);
         grid-template-areas: "search" "action" "filters";
       }
+      .filter-controls { width: 100%; display: grid; grid-template-columns: 1fr; }
+      .filter-group { min-width: 0; }
+      .filter-group > div { min-width: 0; flex: 1; }
+      .severity-filter, .action-filter { flex: 1; padding: 0 5px; }
       .toolbar-actions { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .toolbar-actions .compact-action { width: 100%; }
       .toolbar-actions .compact-action span { display: inline; }
@@ -1746,11 +1791,19 @@ def _html() -> str:
         <section class="workspace-section">
           <div class="results-toolbar">
             <label class="result-search"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="resultSearch" type="search" aria-label="搜索分析结果" placeholder="搜索文件、问题或规则"></label>
-            <div class="severity-filters" id="severityFilters" role="group" aria-label="风险级别筛选">
-              <button class="severity-filter active" type="button" data-severity="all">全部</button>
-              <button class="severity-filter" type="button" data-severity="high">高</button>
-              <button class="severity-filter" type="button" data-severity="medium">中</button>
-              <button class="severity-filter" type="button" data-severity="low">低</button>
+            <div class="filter-controls">
+              <div class="filter-group"><span class="filter-label">风险</span><div class="severity-filters" id="severityFilters" role="group" aria-label="风险级别筛选">
+                <button class="severity-filter active" type="button" data-severity="all">全部</button>
+                <button class="severity-filter" type="button" data-severity="high">高</button>
+                <button class="severity-filter" type="button" data-severity="medium">中</button>
+                <button class="severity-filter" type="button" data-severity="low">低</button>
+              </div></div>
+              <div class="filter-group"><span class="filter-label">动作</span><div class="action-filters" id="actionFilters" role="group" aria-label="建议动作筛选">
+                <button class="action-filter active" type="button" data-action="all">全部<span class="filter-count" data-action-count="all">0</span></button>
+                <button class="action-filter" type="button" data-action="add">增加<span class="filter-count" data-action-count="add">0</span></button>
+                <button class="action-filter" type="button" data-action="delete">删除<span class="filter-count" data-action-count="delete">0</span></button>
+                <button class="action-filter" type="button" data-action="modify">修改<span class="filter-count" data-action-count="modify">0</span></button>
+              </div></div>
             </div>
             <div class="toolbar-actions">
               <button class="secondary compact-action" id="expandAllButton" type="button" title="展开当前筛选结果" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 5 5 5-5"/><path d="m7 13 5 5 5-5"/></svg><span>全部展开</span></button>
@@ -1875,6 +1928,7 @@ def _html() -> str:
       collapsedFiles: new Set(),
       searchQuery: "",
       severityFilter: "all",
+      actionFilter: "all",
       appliedIssueIds: new Set(),
       applyRecords: [],
       latestApplyId: "",
@@ -1924,6 +1978,7 @@ def _html() -> str:
     const refreshRuntimesButton = document.querySelector("#refreshRuntimesButton");
     const resultSearch = document.querySelector("#resultSearch");
     const severityFilters = document.querySelector("#severityFilters");
+    const actionFilters = document.querySelector("#actionFilters");
     const resultStream = document.querySelector("#resultStream");
     const resultsSummary = document.querySelector("#resultsSummary");
     const expandAllButton = document.querySelector("#expandAllButton");
@@ -2040,6 +2095,12 @@ def _html() -> str:
       const button = event.target.closest("button[data-severity]");
       if (!button) return;
       state.severityFilter = button.dataset.severity;
+      renderResultStream();
+    });
+    actionFilters.addEventListener("click", event => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      state.actionFilter = button.dataset.action;
       renderResultStream();
     });
     resultStream.addEventListener("click", handleResultStreamClick);
@@ -2487,6 +2548,7 @@ def _html() -> str:
       state.collapsedFiles = new Set();
       state.searchQuery = "";
       state.severityFilter = "all";
+      state.actionFilter = "all";
       state.appliedIssueIds = new Set();
       state.applyRecords = [];
       resultSearch.value = "";
@@ -3131,6 +3193,7 @@ def _html() -> str:
       state.collapsedFiles = new Set();
       state.searchQuery = "";
       state.severityFilter = "all";
+      state.actionFilter = "all";
       state.appliedIssueIds = new Set();
       state.applyRecords = [];
       resultSearch.value = "";
@@ -3146,7 +3209,7 @@ def _html() -> str:
       coverageBanner.classList.add("hidden");
       scanProgress.classList.add("hidden");
       incrementalNote.classList.add("hidden");
-      updateSeverityFilters();
+      updateResultFilters();
       renderDiagnostics();
     }
 
@@ -3159,6 +3222,7 @@ def _html() -> str:
         state.collapsedFiles = new Set();
         state.searchQuery = "";
         state.severityFilter = "all";
+        state.actionFilter = "all";
         state.appliedIssueIds = new Set();
         state.applyRecords = [];
         resultSearch.value = "";
@@ -3291,15 +3355,18 @@ def _html() -> str:
     }
 
     function renderResultStream() {
-      updateSeverityFilters();
+      updateResultFilters();
       if (!state.report) return;
       const allGroups = issueGroups();
       const files = groupedFiles();
       const visibleCount = files.reduce((total, file) => total + file.groups.length, 0);
       resultsSummary.innerHTML = `<strong>显示 ${visibleCount} / ${allGroups.length} 个问题位置</strong> · ${files.length} 个文件`;
+      const emptyLabel = state.actionFilter === "all"
+        ? "没有匹配的分析结果"
+        : `没有${actionTypeText(state.actionFilter)}类分析结果`;
       resultStream.innerHTML = files.length
         ? files.map(fileGroupMarkup).join("")
-        : '<div class="results-empty">没有匹配的分析结果</div>';
+        : `<div class="results-empty">${esc(emptyLabel)}</div>`;
       resultStream.querySelectorAll("input[data-file-check]").forEach(input => {
         const file = files.find(item => item.path === input.dataset.fileCheck);
         const applicable = file ? file.groups.filter(isGroupApplicable) : [];
@@ -3326,23 +3393,29 @@ def _html() -> str:
         group.issues.push(issue);
         if ((severityRank[issue.severity] || 0) > (severityRank[group.primary.severity] || 0)) group.primary = issue;
       });
-      return [...groups.values()].map(group => ({
-        ...group,
-        filePath: group.primary.file_path,
-        line: Number(group.primary.line || 0),
-        searchText: [
-          group.primary.file_path,
-          group.primary.line,
-          ...group.issues.flatMap(issue => [issue.title, ruleText(issue.kind), issue.reason, issue.suggestion])
-        ].join(" ").toLocaleLowerCase("zh-CN")
-      }));
+      return [...groups.values()].map(group => {
+        const actionType = groupActionType(group);
+        return {
+          ...group,
+          actionType,
+          filePath: group.primary.file_path,
+          line: Number(group.primary.line || 0),
+          searchText: [
+            group.primary.file_path,
+            group.primary.line,
+            actionTypeText(actionType),
+            ...group.issues.flatMap(issue => [issue.title, ruleText(issue.kind), issue.reason, issue.suggestion])
+          ].join(" ").toLocaleLowerCase("zh-CN")
+        };
+      });
     }
 
     function visibleIssueGroups() {
       const query = state.searchQuery.trim().toLocaleLowerCase("zh-CN");
       return issueGroups().filter(group => {
         const severityMatches = state.severityFilter === "all" || group.primary.severity === state.severityFilter;
-        return severityMatches && (!query || group.searchText.includes(query));
+        const actionMatches = state.actionFilter === "all" || group.actionType === state.actionFilter;
+        return severityMatches && actionMatches && (!query || group.searchText.includes(query));
       });
     }
 
@@ -3375,11 +3448,41 @@ def _html() -> str:
       return state.reportActionable && !state.scanning && patchIssueIds(group).length > 0 && !isGroupApplied(group);
     }
 
-    function updateSeverityFilters() {
+    function issueActionType(issue) {
+      const fixAction = issue.fix?.action;
+      if (fixAction === "delete") return "delete";
+      if (fixAction === "insert_before") return "add";
+      if (fixAction === "replace") return issue.log_call_id ? "modify" : "add";
+      if (issue.kind === "missing_exception_log" || issue.kind === "ai_missing_log") return "add";
+      if (issue.patch_action === "delete" || issue.kind === "debug_log") return "delete";
+      return "modify";
+    }
+
+    function groupActionType(group) {
+      const exact = group.issues.find(issue => issue.fix?.id);
+      if (exact) return issueActionType(exact);
+      const actions = new Set(group.issues.map(issueActionType));
+      if (actions.has("add")) return "add";
+      if (actions.has("delete")) return "delete";
+      return "modify";
+    }
+
+    function updateResultFilters() {
       severityFilters.querySelectorAll("button[data-severity]").forEach(button => {
         const active = button.dataset.severity === state.severityFilter;
         button.classList.toggle("active", active);
         button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+      const groups = issueGroups();
+      const counts = { all: groups.length, add: 0, delete: 0, modify: 0 };
+      groups.forEach(group => { counts[group.actionType] = (counts[group.actionType] || 0) + 1; });
+      actionFilters.querySelectorAll("button[data-action]").forEach(button => {
+        const action = button.dataset.action;
+        const active = action === state.actionFilter;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+        const count = button.querySelector("[data-action-count]");
+        if (count) count.textContent = String(counts[action] || 0);
       });
     }
 
@@ -3439,7 +3542,7 @@ def _html() -> str:
             <label class="issue-select" title="${applicable ? "选择此修改" : pending ? pendingLabel : applied ? "该修改已采纳" : "当前问题没有精确修改"}"><input type="checkbox" data-group-check="${esc(group.id)}" ${state.selectedGroups.has(group.id) ? "checked" : ""} ${applicable ? "" : "disabled"}></label>
             <span class="pill ${esc(issue.severity)}">${esc(severityText(issue.severity))}</span>
             <button class="result-toggle" type="button" data-group-toggle="${esc(group.id)}" aria-expanded="${expanded ? "true" : "false"}">
-              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span>${applied ? '<span class="issue-status">已采纳</span>' : pending ? `<span class="issue-status muted">${pendingStatus}</span>` : !fix ? '<span class="issue-status muted">仅建议</span>' : ""}</span>
+              <span class="result-title-line"><span class="result-title">${esc(issue.title)}</span><span class="action-chip ${esc(group.actionType)}">${esc(actionTypeText(group.actionType))}</span>${applied ? '<span class="issue-status">已采纳</span>' : pending ? `<span class="issue-status muted">${pendingStatus}</span>` : !fix ? '<span class="issue-status muted">仅建议</span>' : ""}</span>
               <span class="result-rules">第 ${esc(issue.line)} 行 · ${esc(rules.join("、"))} · ${esc(sourceText(issue.source))}</span>
             </button>
             <svg class="icon result-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -3613,6 +3716,13 @@ def _html() -> str:
       if (value === "medium") return "中";
       if (value === "low") return "低";
       return value;
+    }
+
+    function actionTypeText(value) {
+      if (value === "add") return "增加日志";
+      if (value === "delete") return "删除日志";
+      if (value === "modify") return "修改日志";
+      return "全部动作";
     }
 
     function sourceText(value) {
