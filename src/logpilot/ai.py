@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -619,6 +620,7 @@ def _execute_with_cache(
                 ),
                 encoding="utf-8",
             )
+            _prune_ai_cache(cache_path.parent)
         except OSError:
             pass
     return execution, False
@@ -629,6 +631,34 @@ def _cache_path(repo_root: Path, runtime: RuntimeInfo, prompt: str, model: str) 
         "\0".join([runtime.id, runtime.version, model, prompt]).encode("utf-8")
     ).hexdigest()
     return repository_data_dir(repo_root) / "ai-cache" / f"{digest}.json"
+
+
+def _prune_ai_cache(cache_dir: Path, max_bytes: int = 1024**3, max_age_days: int = 30) -> None:
+    cutoff = time.time() - max_age_days * 24 * 60 * 60
+    files: list[tuple[Path, float, int]] = []
+    total = 0
+    try:
+        candidates = list(cache_dir.glob("*.json"))
+    except OSError:
+        return
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < cutoff:
+            path.unlink(missing_ok=True)
+            continue
+        files.append((path, stat.st_mtime, stat.st_size))
+        total += stat.st_size
+    for path, _modified, size in sorted(files, key=lambda item: item[1]):
+        if total <= max_bytes:
+            break
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
 
 
 def _trace_for_execution(

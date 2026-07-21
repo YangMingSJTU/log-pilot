@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,7 +17,9 @@ from .history import list_history_runs, load_history_run
 from .config import load_config
 from .locking import RepositoryBusyError, repository_operation_lock
 from .parsers import LANGUAGE_BY_SUFFIX
+from .patching import generate_patch
 from .pipeline import run_scan
+from .planning import build_scan_plan, load_scan_plan, save_scan_plan, selected_modules
 from .remediation import (
     ApplyConflictError,
     ApplyNotFoundError,
@@ -25,6 +29,7 @@ from .remediation import (
     rollback_apply,
 )
 from .runtime import RuntimeExecutor, RuntimeRegistry
+from .result_store import RunResultStore
 from .scanner import scan_repository_detailed
 from .scan_jobs import ScanJob, TERMINAL_SCAN_STATUSES
 from .settings import (
@@ -33,7 +38,7 @@ from .settings import (
     save_repository_settings,
     settings_payload,
 )
-from .storage import load_last_repository, repository_data_dir, save_last_repository
+from .storage import initialize_repository_storage, load_last_repository, repository_data_dir, save_last_repository
 
 
 def build_server(
@@ -50,11 +55,14 @@ def build_server(
         "artifacts": repository_data_dir(initial_root),
         "runtime_id": "auto",
     }
+    _mark_interrupted_runs(state["artifacts"])
     runtimes = runtime_registry or RuntimeRegistry()
     executor = runtime_executor or RuntimeExecutor()
+    use_scan_subprocess = runtime_executor is None and runtime_registry is None
     browse_lock = threading.Lock()
     scan_jobs: dict[str, ScanJob] = {}
     scan_jobs_lock = threading.Lock()
+    scan_processes: dict[str, tuple[subprocess.Popen[str], Path]] = {}
 
     def activate_repository(target: Path, runtime_id: str | None = None) -> None:
         resolved = save_last_repository(target)
@@ -82,6 +90,114 @@ def build_server(
         except Exception as exc:
             job.fail(str(exc))
 
+    def execute_scan_subprocess(
+        job: ScanJob,
+        target: Path,
+        runtime,
+        plan_id: str,
+        module_ids: list[str],
+        retry_module_id: str = "",
+        resume: bool = False,
+    ) -> None:
+        data_dir = initialize_repository_storage(target)
+        cancel_file = data_dir / "runs" / job.run_id / "cancel.requested"
+        cancel_file.parent.mkdir(parents=True, exist_ok=True)
+        cancel_file.unlink(missing_ok=True)
+        command = [
+            sys.executable,
+            "-m",
+            "logpilot.scan_runner",
+            "--repository",
+            str(target),
+            "--plan",
+            plan_id,
+            "--run",
+            job.run_id,
+            "--runtime",
+            runtime.id,
+            "--cancel-file",
+            str(cancel_file),
+        ]
+        for module_id in module_ids:
+            command.extend(["--module", module_id])
+        if retry_module_id:
+            command.extend(["--retry-module", retry_module_id])
+        if resume:
+            command.append("--resume")
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        source_root = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            shell=False,
+            env=env,
+            creationflags=creationflags,
+            start_new_session=os.name != "nt",
+        )
+        with scan_jobs_lock:
+            scan_processes[job.id] = (process, cancel_file)
+        terminal_seen = False
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = payload.get("type")
+                if kind == "progress" and isinstance(payload.get("event"), dict):
+                    job.update(payload["event"])
+                elif kind == "completed":
+                    terminal_seen = True
+                    activate_repository(target, runtime.id)
+                    job.complete(None, job.run_id)
+                elif kind == "cancelled":
+                    terminal_seen = True
+                    job.cancel()
+                elif kind == "failed":
+                    terminal_seen = True
+                    job.fail(str(payload.get("error", "分析进程失败。")))
+            return_code = process.wait()
+            if not terminal_seen:
+                error = process.stderr.read().strip() if process.stderr else ""
+                if job.should_cancel() or return_code == 2:
+                    job.cancel()
+                else:
+                    job.fail(error or f"分析进程异常退出（exit code {return_code}）。")
+        except Exception as exc:
+            if job.should_cancel():
+                job.cancel()
+            else:
+                job.fail(str(exc))
+        finally:
+            cancel_file.unlink(missing_ok=True)
+            with scan_jobs_lock:
+                scan_processes.pop(job.id, None)
+
+    def stop_scan_process(job_id: str) -> None:
+        with scan_jobs_lock:
+            entry = scan_processes.get(job_id)
+        if not entry:
+            return
+        process, cancel_file = entry
+        cancel_file.touch(exist_ok=True)
+
+        def force_stop() -> None:
+            time.sleep(2)
+            if process.poll() is not None:
+                return
+            _terminate_process_tree(process)
+
+        threading.Thread(target=force_stop, daemon=True, name=f"logpilot-cancel-{job_id[:8]}").start()
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -94,9 +210,9 @@ def build_server(
                 payload["active_scan"] = active_jobs[-1].snapshot() if active_jobs else None
                 self._send_json(payload)
             elif parsed.path == "/api/report":
-                self._send_file(state["artifacts"] / "report.json", "application/json; charset=utf-8")
+                self._send_latest_report()
             elif parsed.path == "/api/patch":
-                self._send_file(state["artifacts"] / "changes.diff", "text/plain; charset=utf-8")
+                self._send_latest_patch(parsed.query)
             elif parsed.path == "/api/history":
                 self._send_json({"repository": str(state["repo_root"]), "runs": list_history_runs(state["artifacts"])})
             elif parsed.path == "/api/history/run":
@@ -115,6 +231,10 @@ def build_server(
                 self._send_json({"repository": str(target), **settings_payload(target)})
             elif parsed.path.startswith("/api/scans/"):
                 self._send_scan_job(parsed.path, parsed.query)
+            elif parsed.path.startswith("/api/runs/") and parsed.path.endswith("/issues"):
+                self._send_run_issues(parsed.path, parsed.query)
+            elif parsed.path.startswith("/api/runs/"):
+                self._send_run_detail(parsed.path)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -122,8 +242,12 @@ def build_server(
             parsed = urlparse(self.path)
             if parsed.path == "/api/scans":
                 self._handle_scan_start()
+            elif parsed.path == "/api/scan/plans":
+                self._handle_scan_plan()
             elif parsed.path.startswith("/api/scans/") and parsed.path.endswith("/cancel"):
                 self._handle_scan_cancel(parsed.path)
+            elif parsed.path.startswith("/api/runs/") and parsed.path.endswith("/retry"):
+                self._handle_module_retry(parsed.path)
             elif parsed.path == "/api/browse":
                 self._handle_browse()
             elif parsed.path == "/api/runtimes/refresh":
@@ -160,17 +284,45 @@ def build_server(
                         (
                             job
                             for job in scan_jobs.values()
-                            if job.repository == repository and not job.is_terminal
+                            if not job.is_terminal
                         ),
                         None,
                     )
                     if active:
                         self._send_json(
-                            {"error": "该仓库已有分析任务正在运行。", "job": active.snapshot()},
+                            {"error": "已有分析任务正在运行。LogPilot 同时只执行一个仓库扫描。", "job": active.snapshot()},
                             HTTPStatus.CONFLICT,
                         )
                         return
+                    resume_run_id = str(payload.get("resume_run_id", "")).strip()
+                    if resume_run_id:
+                        resume_run_id = _safe_api_id(resume_run_id)
+                        database = state["artifacts"] / "runs" / resume_run_id / "results.sqlite3"
+                        if not database.is_file():
+                            raise FileNotFoundError(f"分析记录不存在：{resume_run_id}")
+                        resume_store = RunResultStore(database)
+                        with resume_store.connection() as connection:
+                            row = connection.execute("SELECT plan_id FROM runs WHERE run_id=?", (resume_run_id,)).fetchone()
+                        if row is None:
+                            raise FileNotFoundError(f"分析记录不存在：{resume_run_id}")
+                        plan = load_scan_plan(target, str(row[0]))
+                        module_ids = resume_store.selected_module_ids()
+                    else:
+                        requested_plan_id = str(payload.get("plan_id", "")).strip()
+                        if requested_plan_id:
+                            plan = load_scan_plan(target, requested_plan_id)
+                        else:
+                            config = load_config(target)
+                            include_large_files = bool(payload.get("include_large_files", False))
+                            plan = build_scan_plan(target, config.scan, include_large_files=include_large_files)
+                            save_scan_plan(plan)
+                        raw_module_ids = payload.get("module_ids", [])
+                        if not isinstance(raw_module_ids, list):
+                            raise ValueError("module_ids 必须是数组。")
+                        module_ids = [str(item) for item in raw_module_ids]
+                        selected_modules(plan, module_ids)
                     job = ScanJob(repository, selected_runtime.id)
+                    job.run_id = resume_run_id or _new_web_run_id()
                     scan_jobs[job.id] = job
                     completed_jobs = [
                         item for item in scan_jobs.values() if item.status in TERMINAL_SCAN_STATUSES
@@ -178,18 +330,164 @@ def build_server(
                     for old_job in completed_jobs[:-20]:
                         scan_jobs.pop(old_job.id, None)
                 worker = threading.Thread(
-                    target=execute_scan_job,
-                    args=(job, target, selected_runtime),
+                    target=execute_scan_subprocess if use_scan_subprocess else execute_scan_job,
+                    args=(job, target, selected_runtime, plan.id, module_ids, "", bool(resume_run_id)) if use_scan_subprocess else (job, target, selected_runtime),
                     daemon=True,
                     name=f"logpilot-scan-{job.id[:8]}",
                 )
                 worker.start()
                 self._send_json(
-                    {"job": job.snapshot(), "runtime": selected_runtime.to_dict()},
+                    {"job": job.snapshot(), "runtime": selected_runtime.to_dict(), "plan": plan.to_dict()},
                     HTTPStatus.ACCEPTED,
                 )
             except Exception as exc:  # Keep the local UI useful during early scanner work.
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _handle_scan_plan(self) -> None:
+            try:
+                payload = self._read_json()
+                target = _validate_repository(_resolve_repo_path(str(payload.get("path", ""))))
+                config = load_config(target)
+                app_settings = settings_payload(target)["settings"]
+                if app_settings.get("language_mode") == "custom":
+                    from .settings import load_repository_settings, selected_extensions
+
+                    extensions = selected_extensions(load_repository_settings(target))
+                    if extensions is not None:
+                        config.scan.include_extensions = extensions
+                plan = build_scan_plan(
+                    target,
+                    config.scan,
+                    include_large_files=bool(payload.get("include_large_files", False)),
+                )
+                save_scan_plan(plan)
+                self._send_json({"plan": plan.to_dict()})
+            except (OSError, ValueError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _send_run_issues(self, path: str, query: str) -> None:
+            parts = [part for part in path.split("/") if part]
+            if len(parts) != 4 or parts[:2] != ["api", "runs"] or parts[-1] != "issues":
+                self._send_json({"error": "无效的问题查询路径。"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                run_id = _safe_api_id(parts[2])
+                params = parse_qs(query)
+                database = state["artifacts"] / "runs" / run_id / "results.sqlite3"
+                if not database.is_file():
+                    raise FileNotFoundError(f"分析记录不存在：{run_id}")
+                store = RunResultStore(database)
+                payload = store.query_issues(
+                    module_id=params.get("module", [""])[0],
+                    severity=params.get("severity", [""])[0],
+                    action=params.get("action", [""])[0],
+                    search=params.get("search", [""])[0],
+                    limit=int(params.get("limit", ["100"])[0]),
+                    offset=int(params.get("offset", ["0"])[0]),
+                )
+                self._send_json(payload)
+            except (FileNotFoundError, ValueError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+
+        def _send_run_detail(self, path: str) -> None:
+            parts = [part for part in path.split("/") if part]
+            if len(parts) != 3 or parts[:2] != ["api", "runs"]:
+                self._send_json({"error": "无效的分析记录路径。"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                run_id = _safe_api_id(parts[2])
+                database = state["artifacts"] / "runs" / run_id / "results.sqlite3"
+                if not database.is_file():
+                    run = load_history_run(state["artifacts"], run_id)
+                    self._send_json({
+                        "run_id": run_id,
+                        "status": "completed",
+                        "summary": run["report"].get("summary", {}),
+                        "modules": [],
+                        "parse_failures": run["report"].get("parse_failures", [])[:5],
+                        "parse_failure_count": len(run["report"].get("parse_failures", [])),
+                        "language_insights": run["report"].get("language_insights", []),
+                        "legacy": True,
+                    })
+                    return
+                self._send_json(RunResultStore(database).run_detail())
+            except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+
+        def _handle_module_retry(self, path: str) -> None:
+            parts = [part for part in path.split("/") if part]
+            if len(parts) != 6 or parts[:2] != ["api", "runs"] or parts[3] != "modules" or parts[-1] != "retry":
+                self._send_json({"error": "无效的目录重试路径。"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                run_id = _safe_api_id(parts[2])
+                module_id = _safe_api_id(parts[4])
+                payload = self._read_json()
+                requested_runtime = str(payload.get("runtime", state.get("runtime_id", "auto"))).strip() or "auto"
+                selected_runtime = runtimes.resolve(requested_runtime)
+                database = state["artifacts"] / "runs" / run_id / "results.sqlite3"
+                if not database.is_file():
+                    raise FileNotFoundError(f"分析记录不存在：{run_id}")
+                store = RunResultStore(database)
+                with store.connection() as connection:
+                    row = connection.execute("SELECT plan_id FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                if row is None:
+                    raise FileNotFoundError(f"分析记录不存在：{run_id}")
+                with scan_jobs_lock:
+                    active = next((item for item in scan_jobs.values() if not item.is_terminal), None)
+                    if active:
+                        self._send_json({"error": "已有分析任务正在运行。", "job": active.snapshot()}, HTTPStatus.CONFLICT)
+                        return
+                    job = ScanJob(str(state["repo_root"]), selected_runtime.id)
+                    job.run_id = run_id
+                    scan_jobs[job.id] = job
+                worker = threading.Thread(
+                    target=execute_scan_subprocess,
+                    args=(job, state["repo_root"], selected_runtime, str(row[0]), [], module_id),
+                    daemon=True,
+                    name=f"logpilot-retry-{job.id[:8]}",
+                )
+                worker.start()
+                self._send_json({"job": job.snapshot()}, HTTPStatus.ACCEPTED)
+            except FileNotFoundError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except (OSError, ValueError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _send_latest_report(self) -> None:
+            history = list_history_runs(state["artifacts"])
+            if not history:
+                self._send_json({"error": "当前仓库还没有分析结果。"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                run = load_history_run(state["artifacts"], str(history[0]["run_id"]))
+                self._send_json(run["report"])
+            except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+
+        def _send_latest_patch(self, query: str = "") -> None:
+            history = list_history_runs(state["artifacts"])
+            if not history:
+                self._send_json({"error": "当前仓库还没有分析结果。"}, HTTPStatus.NOT_FOUND)
+                return
+            requested = parse_qs(query).get("run_id", [])
+            run_id = _safe_api_id(requested[0]) if requested else str(history[0]["run_id"])
+            try:
+                run = load_history_run(state["artifacts"], run_id)
+                patch = run["patch"]
+                if not patch:
+                    from .result_store import report_from_dict
+
+                    report = report_from_dict(run["report"])
+                    patch = generate_patch(state["repo_root"], report.logs, report.issues)
+                    (state["artifacts"] / "runs" / run_id / "changes.diff").write_text(patch, encoding="utf-8")
+                self._send("text/plain; charset=utf-8", patch)
+            except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
 
         def _send_scan_job(self, path: str, query: str) -> None:
             job = self._scan_job(path)
@@ -211,6 +509,8 @@ def build_server(
             if not job.request_cancel():
                 self._send_json({"error": "分析任务已经结束。", "job": job.snapshot()}, HTTPStatus.CONFLICT)
                 return
+            if use_scan_subprocess:
+                stop_scan_process(job.id)
             self._send_json({"job": job.snapshot()})
 
         def _scan_job(self, path: str, cancel: bool = False) -> ScanJob | None:
@@ -484,12 +784,68 @@ def _resolve_repo_path(raw_path: str) -> Path:
 
 def _state_payload(state: dict[str, Any]) -> dict[str, object]:
     artifacts = state["artifacts"]
+    history = list_history_runs(artifacts)
     return {
         "repository": str(state["repo_root"]),
-        "has_report": (artifacts / "report.json").exists(),
-        "history": list_history_runs(artifacts),
+        "has_report": bool(history),
+        "history": history,
         "runtime_id": state.get("runtime_id", "auto"),
     }
+
+
+def _safe_api_id(value: str) -> str:
+    if not value or any(char in value for char in "\\/.: "):
+        raise ValueError("无效的资源 ID。")
+    return value
+
+
+def _new_web_run_id() -> str:
+    return datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%f")
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=1,
+                shell=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            import signal
+
+            os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+
+
+def _mark_interrupted_runs(data_dir: Path) -> None:
+    runs_dir = data_dir / "runs"
+    if not runs_dir.is_dir():
+        return
+    for database in runs_dir.glob("*/results.sqlite3"):
+        try:
+            store = RunResultStore(database)
+            progress = store.progress()
+            if progress.get("status") != "running":
+                continue
+            store.mark_running_interrupted()
+            metadata_path = database.parent / "metadata.json"
+            if metadata_path.is_file():
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata["status"] = "interrupted"
+                metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
 
 
 def _runtime_payload(
@@ -775,6 +1131,40 @@ def _html() -> str:
       border-top: 1px solid var(--line-soft);
       background: #0f0f11;
     }
+    .module-progress-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 1px;
+      border-top: 1px solid var(--line-soft);
+      background: var(--line-soft);
+    }
+    .module-progress-item {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 42px;
+      padding: 7px 12px;
+      background: #0f0f11;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .module-progress-item i { width: 7px; height: 7px; border-radius: 50%; background: #52525b; }
+    .module-progress-item.scanning i, .module-progress-item.ai i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .module-progress-item.completed i { background: var(--green); }
+    .module-progress-item.failed i { background: var(--red); }
+    .module-progress-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
+    .module-progress-item button {
+      height: 26px;
+      padding: 0 9px;
+      border-color: rgba(248, 113, 113, .34);
+      background: rgba(248, 113, 113, .08);
+      color: #fca5a5;
+      font-size: 10px;
+      box-shadow: none;
+    }
+    .module-progress-item button:hover { border-color: var(--red); background: rgba(248, 113, 113, .14); }
     .scan-step {
       min-width: 0;
       min-height: 48px;
@@ -1014,13 +1404,38 @@ def _html() -> str:
       top: 0;
       z-index: 20;
       display: grid;
-      grid-template-columns: minmax(240px, 1fr) auto auto;
+      grid-template-columns: minmax(150px, 210px) minmax(240px, 1fr) auto auto;
       gap: 10px;
       align-items: center;
       padding: 10px 0;
       background: rgba(9, 9, 10, .96);
       backdrop-filter: blur(10px);
     }
+    .module-filter {
+      height: 36px;
+      padding: 0 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #111113;
+    }
+    .results-pager { display: flex; align-items: center; gap: 7px; }
+    .results-pager button { width: 30px; height: 30px; padding: 0; }
+    .plan-dialog { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100dvh - 32px)); }
+    .plan-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+    .plan-stat { padding: 14px 18px; border-right: 1px solid var(--line); }
+    .plan-stat:last-child { border-right: 0; }
+    .plan-stat span { display: block; color: var(--muted); font-size: 10px; }
+    .plan-stat strong { display: block; margin-top: 7px; font-size: 18px; }
+    .plan-tools { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+    .plan-tools div { display: flex; gap: 7px; }
+    .plan-modules { min-height: 180px; max-height: 420px; overflow: auto; }
+    .plan-module { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 58px; padding: 9px 18px; border-bottom: 1px solid var(--line-soft); }
+    .plan-module:hover { background: #141416; }
+    .plan-module input { width: 15px; height: 15px; padding: 0; }
+    .plan-module strong, .plan-module span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .plan-module strong { font-size: 12px; }
+    .plan-module span { margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .plan-module em { color: var(--subtle); font-size: 10px; font-style: normal; white-space: nowrap; }
     .result-search {
       min-width: 0;
       height: 36px;
@@ -1597,9 +2012,10 @@ def _html() -> str:
 
     @media (max-width: 1320px) {
       .results-toolbar {
-        grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-areas: "search action" "filters filters";
+        grid-template-columns: minmax(150px, 210px) minmax(0, 1fr) auto;
+        grid-template-areas: "module search action" "filters filters filters";
       }
+      .module-filter { grid-area: module; }
       .result-search { grid-area: search; }
       .filter-controls { grid-area: filters; justify-self: start; flex-wrap: wrap; }
       .toolbar-actions { grid-area: action; }
@@ -1641,9 +2057,10 @@ def _html() -> str:
       .metric:nth-child(4) { border-right: 0; }
       .risk-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); }
       .results-toolbar {
-        grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-areas: "search action" "filters filters";
+        grid-template-columns: minmax(150px, 190px) minmax(0, 1fr) auto;
+        grid-template-areas: "module search action" "filters filters filters";
       }
+      .module-filter { grid-area: module; }
       .result-search { grid-area: search; }
       .filter-controls { grid-area: filters; justify-self: start; flex-wrap: wrap; }
       .toolbar-actions { grid-area: action; }
@@ -1688,8 +2105,12 @@ def _html() -> str:
       .compact-action span { display: none; }
       .results-toolbar {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-areas: "search" "action" "filters";
+        grid-template-areas: "module" "search" "action" "filters";
       }
+      .module-filter { width: 100%; }
+      .plan-summary { grid-template-columns: 1fr; }
+      .plan-stat { border-right: 0; border-bottom: 1px solid var(--line-soft); }
+      .plan-tools { align-items: flex-start; flex-direction: column; }
       .filter-controls { width: 100%; display: grid; grid-template-columns: 1fr; }
       .filter-group { min-width: 0; }
       .filter-group > div { min-width: 0; flex: 1; }
@@ -1780,6 +2201,7 @@ def _html() -> str:
             <span class="scan-step" data-scan-step="runtime">运行时分析</span>
             <span class="scan-step" data-scan-step="reporting">生成报告</span>
           </div>
+          <div class="module-progress-list hidden" id="scanModules"></div>
         </section>
         <div class="incremental-note hidden" id="incrementalNote">分析仍在进行，当前展示已完成阶段的结果；完成后才可采纳修改。</div>
         <div class="snapshot-banner hidden" id="snapshotBanner">
@@ -1790,6 +2212,7 @@ def _html() -> str:
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
         <section class="workspace-section">
           <div class="results-toolbar">
+            <select class="module-filter" id="resultModule" aria-label="目录模块"><option value="">全部目录</option></select>
             <label class="result-search"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="resultSearch" type="search" aria-label="搜索分析结果" placeholder="搜索文件、问题或规则"></label>
             <div class="filter-controls">
               <div class="filter-group"><span class="filter-label">风险</span><div class="severity-filters" id="severityFilters" role="group" aria-label="风险级别筛选">
@@ -1811,8 +2234,9 @@ def _html() -> str:
               <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
             </div>
           </div>
-          <div class="results-meta"><span id="resultsSummary">等待分析结果</span><span>按文件分组</span></div>
+          <div class="results-meta"><span id="resultsSummary">等待分析结果</span><div class="results-pager"><button class="secondary icon-only" id="previousIssues" type="button" title="上一页" disabled><svg class="icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button><span id="issuePageLabel">第 1 页</span><button class="secondary icon-only" id="nextIssues" type="button" title="下一页" disabled><svg class="icon" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button></div></div>
           <div class="result-stream" id="resultStream"></div>
+          <span class="hidden">按文件分组</span>
         </section>
       </div>
       <section id="historyPanel" class="view-panel hidden">
@@ -1878,6 +2302,18 @@ def _html() -> str:
     <div class="batch-copy"><strong id="batchSelectionCount">已选择 0 项</strong><span id="batchSelectionFiles"></span></div>
     <div class="batch-actions"><button class="secondary" id="clearSelectionButton" type="button">清空</button><button id="batchApplyButton" type="button">批量采纳</button></div>
   </div>
+  <div class="dialog-backdrop hidden" id="planDialog" role="dialog" aria-modal="true" aria-labelledby="planDialogTitle">
+    <section class="dialog plan-dialog">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="planDialogTitle">选择分析目录</h2><p>大型仓库按目录串行处理，完成的目录会立即提供结果</p></div>
+        <button class="secondary icon-only" id="closePlanDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="plan-summary" id="planSummary"></div>
+      <div class="plan-tools"><div><button class="secondary compact-action" id="selectAllModules" type="button">全选</button><button class="secondary compact-action" id="selectRecommendedModules" type="button">恢复推荐</button></div><span class="section-count" id="planSelectionSummary"></span></div>
+      <div class="plan-modules" id="planModules"></div>
+      <div class="dialog-actions"><button class="secondary" id="cancelPlanButton" type="button">取消</button><button id="confirmPlanButton" type="button">分析选定目录</button></div>
+    </section>
+  </div>
   <div class="dialog-backdrop hidden" id="fullPatchDialog" role="dialog" aria-modal="true" aria-labelledby="fullPatchTitle">
     <section class="dialog">
       <header class="dialog-header">
@@ -1929,6 +2365,15 @@ def _html() -> str:
       searchQuery: "",
       severityFilter: "all",
       actionFilter: "all",
+      resultModules: [],
+      activeModule: "",
+      issueOffset: 0,
+      issueLimit: 100,
+      issueTotal: 0,
+      issueLoading: false,
+      scanPlan: null,
+      planRuntime: null,
+      planPath: "",
       appliedIssueIds: new Set(),
       applyRecords: [],
       latestApplyId: "",
@@ -1964,6 +2409,7 @@ def _html() -> str:
     const scanProgressMessage = document.querySelector("#scanProgressMessage");
     const scanProgressTrack = document.querySelector("#scanProgressTrack");
     const scanSteps = document.querySelector("#scanSteps");
+    const scanModules = document.querySelector("#scanModules");
     const cancelScanButton = document.querySelector("#cancelScanButton");
     const incrementalNote = document.querySelector("#incrementalNote");
     const toastRegion = document.querySelector("#toastRegion");
@@ -1977,10 +2423,14 @@ def _html() -> str:
     const runtimeDot = document.querySelector("#runtimeDot");
     const refreshRuntimesButton = document.querySelector("#refreshRuntimesButton");
     const resultSearch = document.querySelector("#resultSearch");
+    const resultModule = document.querySelector("#resultModule");
     const severityFilters = document.querySelector("#severityFilters");
     const actionFilters = document.querySelector("#actionFilters");
     const resultStream = document.querySelector("#resultStream");
     const resultsSummary = document.querySelector("#resultsSummary");
+    const previousIssues = document.querySelector("#previousIssues");
+    const nextIssues = document.querySelector("#nextIssues");
+    const issuePageLabel = document.querySelector("#issuePageLabel");
     const expandAllButton = document.querySelector("#expandAllButton");
     const collapseAllButton = document.querySelector("#collapseAllButton");
     const fullPatchButton = document.querySelector("#fullPatchButton");
@@ -2036,9 +2486,29 @@ def _html() -> str:
     const closePresetDialog = document.querySelector("#closePresetDialog");
     const cancelPresetButton = document.querySelector("#cancelPresetButton");
     const confirmPresetButton = document.querySelector("#confirmPresetButton");
+    const planDialog = document.querySelector("#planDialog");
+    const planSummary = document.querySelector("#planSummary");
+    const planModules = document.querySelector("#planModules");
+    const planSelectionSummary = document.querySelector("#planSelectionSummary");
+    const closePlanDialog = document.querySelector("#closePlanDialog");
+    const cancelPlanButton = document.querySelector("#cancelPlanButton");
+    const confirmPlanButton = document.querySelector("#confirmPlanButton");
+    const selectAllModules = document.querySelector("#selectAllModules");
+    const selectRecommendedModules = document.querySelector("#selectRecommendedModules");
+    let issueSearchTimer = 0;
 
     scanButton.addEventListener("click", () => startScan(repoPath.value));
     cancelScanButton.addEventListener("click", cancelScan);
+    closePlanDialog.addEventListener("click", closeScanPlan);
+    cancelPlanButton.addEventListener("click", closeScanPlan);
+    confirmPlanButton.addEventListener("click", confirmScanPlan);
+    selectAllModules.addEventListener("click", () => setPlanSelection("all"));
+    selectRecommendedModules.addEventListener("click", () => setPlanSelection("recommended"));
+    planModules.addEventListener("change", updatePlanSelectionSummary);
+    scanModules.addEventListener("click", event => {
+      const button = event.target.closest("button[data-retry-module]");
+      if (button) retryFailedModule(button.dataset.retryModule);
+    });
     browseButton.addEventListener("click", browseRepository);
     repoPath.addEventListener("keydown", event => {
       if (event.key === "Enter") startScan(repoPath.value);
@@ -2051,6 +2521,20 @@ def _html() -> str:
       loadRepositorySettings(repoPath.value, true);
     });
     refreshRuntimesButton.addEventListener("click", () => loadRuntimes(true));
+    resultModule.addEventListener("change", async () => {
+      state.activeModule = resultModule.value;
+      state.issueOffset = 0;
+      await loadIssuePage();
+    });
+    previousIssues.addEventListener("click", async () => {
+      state.issueOffset = Math.max(0, state.issueOffset - state.issueLimit);
+      await loadIssuePage();
+    });
+    nextIssues.addEventListener("click", async () => {
+      if (state.issueOffset + state.issueLimit >= state.issueTotal) return;
+      state.issueOffset += state.issueLimit;
+      await loadIssuePage();
+    });
     runtimeSelect.addEventListener("change", () => {
       state.selectedRuntime = runtimeSelect.value;
       window.localStorage.setItem("logpilot.runtime", state.selectedRuntime);
@@ -2087,21 +2571,30 @@ def _html() -> str:
     presetDialog.addEventListener("click", event => {
       if (event.target === presetDialog) closePresetEditor();
     });
+    planDialog.addEventListener("click", event => {
+      if (event.target === planDialog) closeScanPlan();
+    });
     resultSearch.addEventListener("input", () => {
       state.searchQuery = resultSearch.value;
-      renderResultStream();
+      window.clearTimeout(issueSearchTimer);
+      issueSearchTimer = window.setTimeout(() => {
+        state.issueOffset = 0;
+        loadIssuePage();
+      }, 220);
     });
     severityFilters.addEventListener("click", event => {
       const button = event.target.closest("button[data-severity]");
       if (!button) return;
       state.severityFilter = button.dataset.severity;
-      renderResultStream();
+      state.issueOffset = 0;
+      loadIssuePage();
     });
     actionFilters.addEventListener("click", event => {
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       state.actionFilter = button.dataset.action;
-      renderResultStream();
+      state.issueOffset = 0;
+      loadIssuePage();
     });
     resultStream.addEventListener("click", handleResultStreamClick);
     resultStream.addEventListener("change", handleResultStreamChange);
@@ -2176,7 +2669,8 @@ def _html() -> str:
     });
     document.addEventListener("keydown", event => {
       if (event.key !== "Escape") return;
-      if (!applyDialog.classList.contains("hidden")) closeApplyConfirmation();
+      if (!planDialog.classList.contains("hidden")) closeScanPlan();
+      else if (!applyDialog.classList.contains("hidden")) closeApplyConfirmation();
       else if (!fullPatchDialog.classList.contains("hidden")) closeFullPatch();
       else if (!presetDialog.classList.contains("hidden")) closePresetEditor();
     });
@@ -2408,6 +2902,35 @@ def _html() -> str:
         return;
       }
       if (!await persistRepositorySettings(true)) return;
+      scanButton.disabled = true;
+      showToast("正在预检仓库并规划目录...", "info", 0);
+      try {
+        const planResponse = await fetch("/api/scan/plans", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: target })
+        });
+        const planPayload = await planResponse.json();
+        if (!planResponse.ok || planPayload.error) throw new Error(planPayload.error || "仓库预检失败");
+        const plan = planPayload.plan;
+        if (plan.large_repository && plan.modules.length > 1) {
+          openScanPlan(plan, target, runtime);
+          scanButton.disabled = false;
+          return;
+        }
+        await submitPlannedScan(target, runtime, plan, plan.modules.map(module => module.id));
+      } catch (error) {
+        const message = await requestFailureMessage(error, "分析失败");
+        showToast(message, "error");
+        setScanning(false);
+        markScanProgressFailed(message);
+      } finally {
+        if (!state.scanning) scanButton.disabled = false;
+      }
+    }
+
+    async function submitPlannedScan(target, runtime, plan, moduleIds) {
+      closeScanPlan();
       resetReportForScan();
       setScanning(true);
       showToast(`已通过 ${runtime.name} 启动后台分析`, "info");
@@ -2415,7 +2938,12 @@ def _html() -> str:
         const response = await fetch("/api/scans", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: target, runtime: runtime.id })
+          body: JSON.stringify({
+            path: target,
+            runtime: runtime.id,
+            plan_id: plan.id,
+            module_ids: moduleIds
+          })
         });
         const payload = await response.json();
         if (!response.ok && !(response.status === 409 && payload.job)) {
@@ -2436,6 +2964,59 @@ def _html() -> str:
       }
     }
 
+    function openScanPlan(plan, path, runtime) {
+      state.scanPlan = plan;
+      state.planPath = path;
+      state.planRuntime = runtime;
+      planSummary.innerHTML = `
+        <div class="plan-stat"><span>源码文件</span><strong>${esc(plan.source_files)}</strong></div>
+        <div class="plan-stat"><span>仓库体积</span><strong>${esc(formatBytes(plan.total_bytes))}</strong></div>
+        <div class="plan-stat"><span>目录模块</span><strong>${esc(plan.modules.length)}</strong></div>`;
+      planModules.innerHTML = plan.modules.map(module => `
+        <label class="plan-module">
+          <input type="checkbox" data-plan-module="${esc(module.id)}" ${module.recommended ? "checked" : ""}>
+          <span><strong>${esc(module.path === "." ? "仓库根目录" : module.path)}</strong><span>${esc(Object.entries(module.languages || {}).map(([language, count]) => `${language} ${count}`).join(" · "))}</span></span>
+          <em>${esc(module.file_count)} 文件 · ${esc(formatBytes(module.total_bytes))}</em>
+        </label>`).join("");
+      updatePlanSelectionSummary();
+      planDialog.classList.remove("hidden");
+    }
+
+    function closeScanPlan() {
+      planDialog.classList.add("hidden");
+    }
+
+    function setPlanSelection(mode) {
+      const recommended = new Set((state.scanPlan?.modules || []).filter(item => item.recommended).map(item => item.id));
+      planModules.querySelectorAll("input[data-plan-module]").forEach(input => {
+        input.checked = mode === "all" || recommended.has(input.dataset.planModule);
+      });
+      updatePlanSelectionSummary();
+    }
+
+    function updatePlanSelectionSummary() {
+      const selected = [...planModules.querySelectorAll("input[data-plan-module]:checked")];
+      const modules = state.scanPlan?.modules || [];
+      const selectedIds = new Set(selected.map(input => input.dataset.planModule));
+      const files = modules.filter(module => selectedIds.has(module.id)).reduce((sum, module) => sum + module.file_count, 0);
+      planSelectionSummary.textContent = `已选 ${selected.length} 个目录 · ${files} 个文件`;
+      confirmPlanButton.disabled = selected.length === 0;
+    }
+
+    async function confirmScanPlan() {
+      const moduleIds = [...planModules.querySelectorAll("input[data-plan-module]:checked")].map(input => input.dataset.planModule);
+      if (!moduleIds.length || !state.scanPlan || !state.planRuntime) return;
+      await submitPlannedScan(state.planPath, state.planRuntime, state.scanPlan, moduleIds);
+    }
+
+    function formatBytes(value) {
+      const size = Number(value || 0);
+      if (size >= 1024 ** 3) return `${(size / 1024 ** 3).toFixed(1)} GiB`;
+      if (size >= 1024 ** 2) return `${(size / 1024 ** 2).toFixed(1)} MiB`;
+      if (size >= 1024) return `${(size / 1024).toFixed(1)} KiB`;
+      return `${size} B`;
+    }
+
     async function resumeScan(job) {
       const runtime = state.runtimes.find(item => item.id === job.runtime_id) || selectedRuntime();
       if (!runtime) {
@@ -2450,7 +3031,7 @@ def _html() -> str:
       setScanning(true);
       if (job.partial_report) {
         state.scanReportVersion = job.report_version;
-        renderReport(job.partial_report, true);
+        renderPartialSummary(job.partial_report.summary);
       }
       renderScanProgress(job);
       showTab("current");
@@ -2474,9 +3055,11 @@ def _html() -> str:
         if (!response.ok || payload.error) throw new Error(payload.error || "分析状态读取失败");
         const job = payload.job;
         renderScanProgress(job);
+        updateResultModules(job.modules || []);
         if (job.partial_report) {
           state.scanReportVersion = job.report_version;
-          renderReport(job.partial_report, true);
+          renderPartialSummary(job.partial_report.summary);
+          if (job.run_id) await loadLiveIssues(job.run_id);
         }
         if (job.status === "completed") {
           await completeScan(job, runtime);
@@ -2503,15 +3086,17 @@ def _html() -> str:
       state.history = historyPayload.runs || [];
       state.activeRunId = job.run_id || state.history[0]?.run_id || "";
       renderHistory(state.history);
-      await loadReport();
+      await loadReport(state.activeRunId);
       await loadRepositorySettings(state.path, true);
       showTab("current");
       setScanning(false);
+      renderResultStream();
       renderScanProgress(job);
       incrementalNote.classList.add("hidden");
       showToast(`${runtime.name} 分析完成，结果已更新`, "success");
       window.setTimeout(() => {
-        if (!state.scanning) scanProgress.classList.add("hidden");
+        const hasFailedModule = (job.modules || []).some(module => module.selected && module.status === "failed");
+        if (!state.scanning && !hasFailedModule) scanProgress.classList.add("hidden");
       }, 1800);
     }
 
@@ -2549,9 +3134,15 @@ def _html() -> str:
       state.searchQuery = "";
       state.severityFilter = "all";
       state.actionFilter = "all";
+      state.resultModules = [];
+      state.activeModule = "";
+      state.issueOffset = 0;
+      state.issueTotal = 0;
       state.appliedIssueIds = new Set();
       state.applyRecords = [];
       resultSearch.value = "";
+      resultModule.innerHTML = '<option value="">全部目录</option>';
+      renderIssuePager();
       document.querySelector("#metrics").innerHTML = summaryMarkup(null);
       resultsSummary.textContent = "正在准备分析";
       resultStream.innerHTML = '<div class="results-empty">本地规则完成后将在这里显示第一批结果</div>';
@@ -2596,6 +3187,7 @@ def _html() -> str:
         step.classList.toggle("done", job.status === "completed" || index < currentIndex);
         step.classList.toggle("active", !terminal && index === currentIndex);
       });
+      renderModuleProgress(job.modules || []);
       cancelScanButton.disabled = terminal || job.status === "cancelling" || state.scanCancelRequested;
       cancelScanButton.textContent = job.status === "cancelling" || state.scanCancelRequested ? "正在停止..." : "停止分析";
       incrementalNote.classList.toggle("hidden", !state.scanning || !state.report);
@@ -2606,18 +3198,161 @@ def _html() -> str:
       incrementalNote.classList.toggle("hidden", !state.report);
     }
 
-    async function loadReport() {
-      const reportResponse = await fetch("/api/report");
-      const report = await reportResponse.json();
-      if (!reportResponse.ok || report.error) throw new Error(report.error || "报告读取失败");
+    function renderModuleProgress(modules) {
+      const visible = modules.filter(module => module.selected);
+      scanModules.classList.toggle("hidden", !visible.length);
+      scanModules.innerHTML = visible.map(module => {
+        const action = module.status === "failed"
+          ? `<button type="button" data-retry-module="${esc(module.id)}" ${state.scanning ? "disabled" : ""}>重试</button>`
+          : `<span>${esc(module.completed_chunks)} / ${esc(module.total_chunks)}</span>`;
+        return `<div class="module-progress-item ${esc(module.status)}"><i></i><strong title="${esc(module.path)}">${esc(module.path === "." ? "仓库根目录" : module.path)}</strong>${action}</div>`;
+      }).join("");
+    }
+
+    async function retryFailedModule(moduleId) {
+      if (!moduleId || state.scanning || !state.activeRunId) return;
+      const runtime = selectedRuntime();
+      if (!runtime) {
+        showToast("没有可用运行时，无法重试目录", "warning");
+        return;
+      }
+      setScanning(true);
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(state.activeRunId)}/modules/${encodeURIComponent(moduleId)}/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ runtime: runtime.id })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "目录重试失败");
+        state.scanJobId = payload.job.job_id;
+        state.scanReportVersion = -1;
+        renderScanProgress(payload.job);
+        showToast("正在重新分析失败目录", "info");
+        await pollScanJob(runtime);
+      } catch (error) {
+        setScanning(false);
+        showToast(await requestFailureMessage(error, "目录重试失败"), "error");
+      }
+    }
+
+    function updateResultModules(modules) {
+      const selected = modules.filter(module => module.selected);
+      const signature = selected.map(module => `${module.id}:${module.issue_count}:${module.status}`).join("|");
+      const currentSignature = state.resultModules.map(module => `${module.id}:${module.issue_count}:${module.status}`).join("|");
+      if (signature === currentSignature) return;
+      state.resultModules = selected;
+      resultModule.innerHTML = '<option value="">全部目录</option>' + selected.map(module =>
+        `<option value="${esc(module.id)}">${esc(module.path === "." ? "仓库根目录" : module.path)} · ${esc(module.issue_count)} 项</option>`
+      ).join("");
+      resultModule.value = state.activeModule;
+    }
+
+    function renderPartialSummary(partial) {
+      if (!partial) return;
+      const current = state.report?.summary || {};
+      const summary = {
+        ...current,
+        files_scanned: partial.files_scanned ?? current.files_scanned ?? 0,
+        discovered_files: current.discovered_files ?? partial.files_scanned ?? 0,
+        log_count: partial.log_count ?? current.log_count ?? 0,
+        issue_count: partial.issue_count ?? current.issue_count ?? 0,
+        severity_counts: partial.severity_counts || current.severity_counts || {},
+        score: null,
+        score_status: "ai_incomplete",
+        ai_status: "running"
+      };
+      if (!state.report) state.report = { summary, logs: [], issues: [], parse_failures: [], language_insights: [], ai_traces: [] };
+      else state.report.summary = summary;
+      renderMetrics(summary);
+    }
+
+    async function loadLiveIssues(runId) {
+      if (!state.report) return;
+      state.activeRunId = runId;
+      try {
+        await loadIssuePage(true);
+      } catch (_error) {
+        // The first transaction may not be committed yet.
+      }
+    }
+
+    async function loadReport(runId = "") {
+      const resolvedRunId = runId || state.history[0]?.run_id || state.activeRunId;
+      if (!resolvedRunId) throw new Error("没有可读取的分析记录");
+      const detailResponse = await fetch(`/api/runs/${encodeURIComponent(resolvedRunId)}`);
+      const detail = await detailResponse.json();
+      if (!detailResponse.ok || detail.error) throw new Error(detail.error || "分析记录读取失败");
+      state.activeRunId = resolvedRunId;
+      state.resultModules = [];
+      state.activeModule = "";
+      state.issueOffset = 0;
+      state.report = {
+        summary: detail.summary || {},
+        logs: [],
+        issues: [],
+        parse_failures: detail.parse_failures || [],
+        language_insights: detail.language_insights || [],
+        ai_traces: []
+      };
+      updateResultModules(detail.modules || []);
+      renderReport(state.report);
       state.reportActionable = true;
-      renderReport(report);
+      if (detail.legacy) {
+        const legacyResponse = await fetch(`/api/history/run?run_id=${encodeURIComponent(resolvedRunId)}`);
+        const legacy = await legacyResponse.json();
+        if (!legacyResponse.ok || legacy.error) throw new Error(legacy.error || "旧分析记录读取失败");
+        state.report = legacy.report;
+        renderReport(state.report);
+      } else {
+        await loadIssuePage();
+      }
       await loadPatch();
       await loadApplies();
     }
 
+    async function loadIssuePage(quiet = false) {
+      if (!state.activeRunId || state.issueLoading) return;
+      state.issueLoading = true;
+      if (!quiet) resultStream.innerHTML = '<div class="results-empty">正在读取当前页...</div>';
+      try {
+        const params = new URLSearchParams({
+          limit: String(state.issueLimit),
+          offset: String(state.issueOffset)
+        });
+        if (state.activeModule) params.set("module", state.activeModule);
+        if (state.severityFilter !== "all") params.set("severity", state.severityFilter);
+        if (state.actionFilter !== "all") params.set("action", state.actionFilter);
+        if (state.searchQuery.trim()) params.set("search", state.searchQuery.trim());
+        const response = await fetch(`/api/runs/${encodeURIComponent(state.activeRunId)}/issues?${params}`);
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "问题列表读取失败");
+        state.issueTotal = Number(payload.total || 0);
+        state.report.issues = payload.items || [];
+        state.report.logs = Object.values(payload.logs || {});
+        state.selectedGroups = new Set();
+        state.expandedGroups = new Set(issueGroups().map(group => group.id));
+        renderResultStream();
+        renderIssuePager();
+      } catch (error) {
+        if (!quiet) showToast(await requestFailureMessage(error, "问题列表读取失败"), "error");
+        throw error;
+      } finally {
+        state.issueLoading = false;
+      }
+    }
+
+    function renderIssuePager() {
+      const start = state.issueTotal ? state.issueOffset + 1 : 0;
+      const end = Math.min(state.issueOffset + state.issueLimit, state.issueTotal);
+      issuePageLabel.textContent = state.issueTotal ? `${start}-${end} / ${state.issueTotal}` : "0 项";
+      previousIssues.disabled = state.issueOffset <= 0;
+      nextIssues.disabled = state.issueOffset + state.issueLimit >= state.issueTotal;
+    }
+
     async function loadPatch() {
-      const response = await fetch("/api/patch");
+      const suffix = state.activeRunId ? `?run_id=${encodeURIComponent(state.activeRunId)}` : "";
+      const response = await fetch(`/api/patch${suffix}`);
       const text = await response.text();
       state.patch = response.ok ? text : "暂无补丁产物。";
       fullPatchButton.disabled = false;
@@ -2627,19 +3362,7 @@ def _html() -> str:
     async function loadHistoryRun(runId) {
       showToast("正在读取历史分析...", "info", 0);
       try {
-        const response = await fetch(`/api/history/run?run_id=${encodeURIComponent(runId)}`);
-        const payload = await response.json();
-        if (!response.ok || payload.error) throw new Error(payload.error || "历史记录读取失败");
-        state.reportActionable = true;
-        renderReport(payload.report);
-        state.activeRunId = runId;
-        state.patch = payload.patch || "暂无补丁产物。";
-        fullPatchButton.disabled = false;
-        renderFullPatch(state.patch);
-        if (payload.metadata && payload.metadata.repository) {
-          updateRepositoryIdentity(payload.metadata.repository);
-        }
-        await loadApplies();
+        await loadReport(runId);
         showTab("current");
         showToast("历史分析已加载", "success");
       } catch (error) {
@@ -3194,9 +3917,15 @@ def _html() -> str:
       state.searchQuery = "";
       state.severityFilter = "all";
       state.actionFilter = "all";
+      state.resultModules = [];
+      state.activeModule = "";
+      state.issueOffset = 0;
+      state.issueTotal = 0;
       state.appliedIssueIds = new Set();
       state.applyRecords = [];
       resultSearch.value = "";
+      resultModule.innerHTML = '<option value="">全部目录</option>';
+      renderIssuePager();
       document.querySelector("#metrics").innerHTML = summaryMarkup(null);
       resultsSummary.textContent = "等待分析结果";
       resultStream.innerHTML = '<div class="results-empty">选择仓库并开始分析</div>';
@@ -3288,7 +4017,7 @@ def _html() -> str:
       if (status === "no_log_samples") return "无日志样本";
       if (status === "insufficient_coverage") return "覆盖不足";
       if (status === "ai_incomplete") return "AI 未完成";
-      if (status === "scoped") return "范围评分";
+      if (status === "scoped") return summary.analysis_scope === "selected_modules" ? "选定目录评分" : "范围评分";
       if (status === "local_only") return "本地规则";
       const score = summary.score;
       if (score >= 85) return "健康";
@@ -3348,6 +4077,9 @@ def _html() -> str:
         coverageBanner.innerHTML = `<strong>当前仅完成本地规则分析</strong>：选择在线运行时可获得语义和缺失日志分析。`;
       } else if (summary.score_status === "no_log_samples") {
         coverageBanner.innerHTML = `<strong>未发现日志样本</strong>：结果不会被标记为健康。`;
+      } else if (summary.analysis_scope === "selected_modules") {
+        const discovered = summary.discovered_files || 0;
+        coverageBanner.innerHTML = `<strong>当前为选定目录评分</strong>：全仓覆盖 ${esc(summary.files_scanned)} / ${esc(discovered)} 个源码文件，不生成全仓健康结论。`;
       } else {
         const discovered = summary.discovered_files || summary.files_scanned || 0;
         coverageBanner.innerHTML = `<strong>源码覆盖完整</strong>：已分析 ${esc(summary.files_scanned)} / ${esc(discovered)} 个源码文件。`;
@@ -3360,7 +4092,7 @@ def _html() -> str:
       const allGroups = issueGroups();
       const files = groupedFiles();
       const visibleCount = files.reduce((total, file) => total + file.groups.length, 0);
-      resultsSummary.innerHTML = `<strong>显示 ${visibleCount} / ${allGroups.length} 个问题位置</strong> · ${files.length} 个文件`;
+      resultsSummary.innerHTML = `<strong>当前页 ${visibleCount} 项</strong> · 共 ${state.issueTotal || allGroups.length} 项 · ${files.length} 个文件`;
       const emptyLabel = state.actionFilter === "all"
         ? "没有匹配的分析结果"
         : `没有${actionTypeText(state.actionFilter)}类分析结果`;
@@ -3760,13 +4492,42 @@ def _html() -> str:
             </div>
             <div class="history-score"><strong>${esc(run.score ?? "N/A")}</strong>${run.score === null || run.score === undefined ? "" : "<span> / 100</span>"}</div>
             <div class="history-stats">${esc(run.files_scanned)} / ${esc(run.discovered_files || run.files_scanned)} 文件 · ${esc(run.log_count)} 日志 · ${esc(run.issue_count)} 问题<br>${esc(run.runtime_id || "规则分析")} · 高 ${esc(sev.high || 0)} · 中 ${esc(sev.medium || 0)} · 低 ${esc(sev.low || 0)}</div>
-            <button class="secondary" type="button" data-run-id="${esc(run.run_id)}"><span>查看</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+            <button class="secondary" type="button" data-run-id="${esc(run.run_id)}" data-run-status="${esc(run.status || "completed")}"><span>${run.status === "interrupted" ? "继续" : "查看"}</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
           </div>
         `;
       }).join("");
       target.querySelectorAll("button[data-run-id]").forEach(button => {
-        button.addEventListener("click", () => loadHistoryRun(button.dataset.runId));
+        button.addEventListener("click", () => button.dataset.runStatus === "interrupted"
+          ? resumeHistoryRun(button.dataset.runId)
+          : loadHistoryRun(button.dataset.runId));
       });
+    }
+
+    async function resumeHistoryRun(runId) {
+      const runtime = selectedRuntime();
+      if (!runtime) {
+        showToast("没有可用运行时，无法继续分析", "warning");
+        return;
+      }
+      resetReportForScan();
+      setScanning(true);
+      try {
+        const response = await fetch("/api/scans", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: state.path, runtime: runtime.id, resume_run_id: runId })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "继续分析失败");
+        state.scanJobId = payload.job.job_id;
+        state.activeRunId = runId;
+        renderScanProgress(payload.job);
+        showTab("current");
+        await pollScanJob(runtime);
+      } catch (error) {
+        setScanning(false);
+        showToast(await requestFailureMessage(error, "继续分析失败"), "error");
+      }
     }
 
     function formatTime(value) {

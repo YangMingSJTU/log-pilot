@@ -16,6 +16,8 @@ from .models import AnalysisTarget, LogCall, ParseFailure, relative_path
 
 
 NATIVE_PARSE_TIMEOUT_SECONDS = 30.0
+NATIVE_WORKER_MAX_FILES = 500
+NATIVE_WORKER_MAX_BYTES = 256 * 1024 * 1024
 _ERROR_KINDS = {"parse_error", "native_crash", "timeout", "protocol_error", "worker_start_failed"}
 ProcessFactory = Callable[[list[str]], Any]
 
@@ -39,6 +41,8 @@ class NativeParserClient:
         self._process: Any | None = None
         self._responses: queue.Queue[tuple[str, str]] | None = None
         self._reader: threading.Thread | None = None
+        self._files_processed = 0
+        self._bytes_processed = 0
 
     def parse_file(
         self,
@@ -50,6 +54,15 @@ class NativeParserClient:
         repo_root = repo_root.resolve()
         path = path.resolve()
         file_path = relative_path(path, repo_root)
+        try:
+            file_size = path.stat().st_size
+        except OSError:
+            file_size = 0
+        if self._process is not None and (
+            self._files_processed >= NATIVE_WORKER_MAX_FILES
+            or self._bytes_processed + file_size > NATIVE_WORKER_MAX_BYTES
+        ):
+            self._discard_worker(graceful=True)
         start_error = self._ensure_worker()
         if start_error:
             return NativeParseResult(
@@ -106,7 +119,10 @@ class NativeParserClient:
                 return NativeParseResult(
                     failure=ParseFailure(file_path, language, "protocol_error", value)
                 )
-            return self._decode_response(value, request_id, file_path, language)
+            result = self._decode_response(value, request_id, file_path, language)
+            self._files_processed += 1
+            self._bytes_processed += file_size
+            return result
 
     def close(self) -> None:
         self._discard_worker(graceful=True)
@@ -232,6 +248,8 @@ class NativeParserClient:
         self._process = None
         self._responses = None
         self._reader = None
+        self._files_processed = 0
+        self._bytes_processed = 0
 
 
 def _launch_process(command: list[str]):

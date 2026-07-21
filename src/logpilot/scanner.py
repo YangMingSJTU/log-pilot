@@ -5,11 +5,11 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from .config import ScanConfig
 from .languages import known_extensions, language_for_path, language_spec
-from .models import AnalysisTarget, LogCall, ParseFailure
+from .models import AnalysisTarget, LogCall, ParseFailure, relative_path
 from .native_parser_client import NativeParserClient
 from .parsers import parse_file_with_targets
 
@@ -62,6 +62,8 @@ def scan_repository_detailed(
     progress: ScanFileProgress | None = None,
     should_cancel: Callable[[], bool] | None = None,
     native_client_factory: Callable[[], NativeParserClient] | None = None,
+    file_paths: Iterable[Path] | None = None,
+    native_client: NativeParserClient | None = None,
 ) -> RepositoryScan:
     repo_root = repo_root.resolve()
     logs: list[LogCall] = []
@@ -72,7 +74,11 @@ def scan_repository_detailed(
     selected_counts: Counter[str] = Counter()
     parse_failures: list[ParseFailure] = []
     unrecognized_counts: Counter[str] = Counter()
-    inventory_files = list(_iter_repository_files(repo_root, config))
+    inventory_files = (
+        sorted((path.resolve() for path in file_paths), key=lambda path: relative_path(path, repo_root).casefold())
+        if file_paths is not None
+        else list(_iter_repository_files(repo_root, config))
+    )
     selected_extensions = set(config.include_extensions)
     source_files: list[tuple[Path, str]] = []
     for path in inventory_files:
@@ -95,7 +101,7 @@ def scan_repository_detailed(
             source_files.append((path, language))
     total = len(source_files)
 
-    native_client = None
+    owned_native_client = native_client is None
     try:
         for index, (path, language) in enumerate(source_files, start=1):
             rel = path.relative_to(repo_root).as_posix()
@@ -126,6 +132,7 @@ def scan_repository_detailed(
                     )
                 )
             else:
+                parsed_logs, parsed_targets = _bounded_context(parsed_logs, parsed_targets)
                 file_counts[language] += 1
                 logs.extend(parsed_logs)
                 targets.extend(parsed_targets)
@@ -133,7 +140,7 @@ def scan_repository_detailed(
                 if progress:
                     progress(index, total, rel)
     finally:
-        if native_client is not None:
+        if owned_native_client and native_client is not None:
             native_client.close()
 
     return RepositoryScan(
@@ -147,6 +154,20 @@ def scan_repository_detailed(
         parse_failures=parse_failures,
         unrecognized_extension_counts=dict(unrecognized_counts),
     )
+
+
+def _bounded_context(
+    logs: list[LogCall],
+    targets: list[AnalysisTarget],
+    limit: int = 8 * 1024,
+) -> tuple[list[LogCall], list[AnalysisTarget]]:
+    for log in logs:
+        log.context = log.context[:limit]
+        log.source_line = log.source_line[:limit]
+    for target in targets:
+        target.context = target.context[:limit]
+        target.source_line = target.source_line[:limit]
+    return logs, targets
 
 
 def _iter_repository_files(repo_root: Path, config: ScanConfig):

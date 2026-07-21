@@ -25,6 +25,8 @@ def attach_fix_proposals(
 
     for log_id, related in delete_issues.items():
         log = logs_by_id[log_id]
+        if len(log.source_line.encode("utf-8")) > 64 * 1024:
+            continue
         proposal = FixProposal(
             id=f"delete:{log.id}",
             action="delete",
@@ -188,6 +190,8 @@ def _attach_python_exception_fixes(
                 issue_ids=[issue.id],
                 log_call_ids=[],
             )
+            if len(proposal.expected_text.encode("utf-8")) > 64 * 1024:
+                continue
             try:
                 ast.parse(apply_fix_to_text(text, proposal))
             except (SyntaxError, ValueError):

@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .history import list_history_runs, load_history_run
 from .pipeline import run_scan
+from .planning import build_scan_plan, resolve_module_selectors, save_scan_plan
+from .config import load_config
 from .remediation import (
     ApplyConflictError,
     ApplyNotFoundError,
@@ -17,6 +19,7 @@ from .remediation import (
 )
 from .runtime import RuntimeRegistry
 from .storage import repository_data_dir
+from .settings import load_repository_settings, selected_extensions
 from .web import serve
 
 
@@ -28,6 +31,8 @@ def main(argv: list[str] | None = None) -> None:
     scan_parser.add_argument("path", nargs="?", default=".", help="Repository path to scan.")
     scan_parser.add_argument("--config", default=None, help="Optional .logpilot.yaml path.")
     scan_parser.add_argument("--runtime", default=None, help="AI runtime: auto, codex, or claude.")
+    scan_parser.add_argument("--module", action="append", default=[], help="Module directory to scan. Repeat as needed.")
+    scan_parser.add_argument("--include-large-files", action="store_true", help="Include source files larger than 10 MiB.")
     scan_parser.set_defaults(func=_scan)
 
     report_parser = subparsers.add_parser("report", help="Print a compact summary from report.json.")
@@ -63,7 +68,25 @@ def main(argv: list[str] | None = None) -> None:
 def _scan(args) -> None:
     repo_root = Path(args.path).expanduser().resolve()
     config_path = Path(args.config) if args.config else None
-    report = run_scan(repo_root, config_path=config_path, runtime_id=args.runtime)
+    config = load_config(repo_root, config_path)
+    extensions = selected_extensions(load_repository_settings(repo_root))
+    if extensions is not None:
+        config.scan.include_extensions = extensions
+    plan = build_scan_plan(repo_root, config.scan, include_large_files=args.include_large_files)
+    save_scan_plan(plan)
+    try:
+        module_ids = resolve_module_selectors(plan, args.module)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    report = run_scan(
+        repo_root,
+        config_path=config_path,
+        runtime_id=args.runtime,
+        plan=plan,
+        module_ids=module_ids,
+        include_large_files=args.include_large_files,
+    )
+    assert report is not None
     score = f"{report.summary.score}/100" if report.summary.score is not None else f"N/A ({report.summary.score_status})"
     print(f"Score: {score}")
     print(f"Coverage: {report.summary.files_scanned}/{report.summary.discovered_files} ({report.summary.coverage_ratio:.1%})")
@@ -73,10 +96,11 @@ def _scan(args) -> None:
 
 
 def _report(args) -> None:
-    path = repository_data_dir(Path(args.path)) / "report.json"
-    if not path.exists():
-        raise SystemExit(f"Report not found: {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data_dir = repository_data_dir(Path(args.path))
+    runs = list_history_runs(data_dir)
+    if not runs:
+        raise SystemExit(f"Report not found: {data_dir}")
+    data = load_history_run(data_dir, str(runs[0]["run_id"]))["report"]
     summary = data["summary"]
     print(f"Repository: {summary['repository']}")
     score = f"{summary['score']}/100" if summary.get("score") is not None else f"N/A ({summary.get('score_status', 'not_scored')})"

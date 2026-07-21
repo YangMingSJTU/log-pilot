@@ -37,7 +37,8 @@ class ScanJob:
         self.error = ""
         self.run_id = ""
         self.report_version = 0
-        self._report: dict[str, Any] | None = None
+        self._summary: dict[str, Any] = {}
+        self._modules: list[dict[str, Any]] = []
         self._cancel_event = threading.Event()
         self._lock = threading.Lock()
         self.created_at = _now()
@@ -49,7 +50,7 @@ class ScanJob:
             return self.status in TERMINAL_SCAN_STATUSES
 
     def update(self, event: dict[str, Any]) -> None:
-        report = event.get("report")
+        job_progress = event.get("progress")
         with self._lock:
             if self.status in TERMINAL_SCAN_STATUSES:
                 return
@@ -58,8 +59,13 @@ class ScanJob:
             self.completed = max(0, int(event.get("completed", self.completed)))
             self.total = max(0, int(event.get("total", self.total)))
             self.message = str(event.get("message", self.message))
-            if isinstance(report, ScanReport):
-                self._report = report.to_dict()
+            if isinstance(job_progress, dict):
+                self.run_id = str(job_progress.get("run_id", self.run_id))
+                raw_modules = job_progress.get("modules", [])
+                self._modules = list(raw_modules) if isinstance(raw_modules, list) else self._modules
+                raw_summary = event.get("summary", job_progress.get("summary", {}))
+                if isinstance(raw_summary, dict):
+                    self._summary = dict(raw_summary)
                 self.report_version += 1
             self.updated_at = _now()
 
@@ -76,7 +82,7 @@ class ScanJob:
     def should_cancel(self) -> bool:
         return self._cancel_event.is_set()
 
-    def complete(self, report: ScanReport, run_id: str) -> None:
+    def complete(self, report: ScanReport | None, run_id: str) -> None:
         with self._lock:
             self.status = "completed"
             self.stage = "complete"
@@ -85,7 +91,8 @@ class ScanJob:
             self.message = "分析完成"
             self.error = ""
             self.run_id = run_id
-            self._report = report.to_dict()
+            if report is not None:
+                self._summary = report.to_dict().get("summary", {})
             self.report_version += 1
             self.updated_at = _now()
 
@@ -120,9 +127,21 @@ class ScanJob:
                 "report_version": self.report_version,
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
+                "modules": list(self._modules),
             }
-            if self._report is not None and known_report_version < self.report_version:
-                payload["partial_report"] = self._report
+            if self._summary and known_report_version < self.report_version:
+                # Kept as a compact compatibility envelope; full findings stay in SQLite.
+                summary = dict(self._summary)
+                if "issue_count" not in summary:
+                    summary["issue_count"] = int(summary.get("issue_count", 0))
+                payload["partial_report"] = {
+                    "summary": summary,
+                    "logs": [],
+                    "issues": [],
+                    "ai_traces": [],
+                    "language_insights": [],
+                    "parse_failures": [],
+                }
             return payload
 
 

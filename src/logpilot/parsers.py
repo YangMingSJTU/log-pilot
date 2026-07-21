@@ -38,10 +38,72 @@ def parse_file_with_targets(
 ) -> tuple[list[LogCall], list[AnalysisTarget]]:
     text = path.read_text(encoding="utf-8", errors="ignore")
     if language == "python":
-        return _parse_python(path, repo_root, text), []
+        return _parse_python(path, repo_root, text), _python_error_targets(path, repo_root, text)
     if language in {"c", "cpp"}:
         raise ValueError("C/C++ files must be parsed through NativeParserClient.")
-    return _parse_text_language(path, repo_root, language, text), []
+    return _parse_text_language(path, repo_root, language, text), _text_error_targets(path, repo_root, language, text)
+
+
+def _python_error_targets(path: Path, repo_root: Path, text: str) -> list[AnalysisTarget]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    lines = text.splitlines()
+    rel = relative_path(path, repo_root)
+    targets: list[AnalysisTarget] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        has_log = any(
+            isinstance(child, ast.Call) and bool(_python_call_name(child.func)[0])
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
+        end_line = int(getattr(node, "end_lineno", node.lineno) or node.lineno)
+        targets.append(
+            AnalysisTarget(
+                id=f"error_path:{rel}:{node.lineno}",
+                kind="error_path",
+                file_path=rel,
+                start_line=node.lineno,
+                end_line=end_line,
+                language="python",
+                context=_context(lines, node.lineno),
+                source_line=lines[node.lineno - 1] if node.lineno <= len(lines) else "",
+                symbol="except",
+                metadata={"has_log": has_log},
+            )
+        )
+    return targets
+
+
+def _text_error_targets(path: Path, repo_root: Path, language: str, text: str) -> list[AnalysisTarget]:
+    if language not in {"java", "javascript", "typescript"}:
+        return []
+    pattern = re.compile(r"\bcatch\s*\([^)]*\)\s*\{(?P<body>[^{}]*)\}", re.DOTALL)
+    lines = text.splitlines()
+    rel = relative_path(path, repo_root)
+    targets: list[AnalysisTarget] = []
+    for match in pattern.finditer(text):
+        line = text[: match.start()].count("\n") + 1
+        body = match.group("body")
+        has_log = bool(re.search(r"\b(logger|log|console)\s*\.\s*(error|exception|warn|warning|log)\s*\(", body))
+        targets.append(
+            AnalysisTarget(
+                id=f"error_path:{rel}:{line}",
+                kind="error_path",
+                file_path=rel,
+                start_line=line,
+                end_line=line + body.count("\n") + 1,
+                language=language,
+                context=_context(lines, line),
+                source_line=lines[line - 1] if line <= len(lines) else "",
+                symbol="catch",
+                metadata={"has_log": has_log},
+            )
+        )
+    return targets
 
 
 def _parse_python(path: Path, repo_root: Path, text: str) -> list[LogCall]:

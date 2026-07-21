@@ -14,6 +14,7 @@ Open the printed local URL, use the repository picker or enter a path such as `D
 ```bash
 logpilot runtimes
 logpilot scan . --runtime codex
+logpilot scan . --module src
 logpilot report .
 logpilot apply . --run latest
 logpilot rollback .
@@ -28,6 +29,10 @@ The selected repository is not used for generated artifacts. Reports, history, p
 - Linux: `$XDG_DATA_HOME/logpilot/repositories/<repository_id>/`
 
 Set `LOGPILOT_DATA_DIR` to override the root directory for tests or isolated environments. A repository may still contain a user-maintained `.logpilot.yaml` scan configuration; LogPilot never creates it.
+
+Large repositories use bounded execution. LogPilot profiles the repository with `git ls-files` when available, identifies project modules, and splits each selected module into hidden chunks of at most 1,000 files or 128 MiB. Repositories with at least 5,000 source files or 512 MiB show a directory selector before analysis. Files larger than 10 MiB are skipped by default and make coverage partial; use `--include-large-files` only when they must be inspected.
+
+New runs store canonical results in `runs/<run_id>/results.sqlite3`. The Web service keeps progress summaries only and queries findings in pages of 100, with a hard API maximum of 200. Parsing, rules, and AI run in a separate `logpilot.scan_runner` process. Completed chunks remain durable, so an interrupted run can continue without repeating them.
 
 The workbench groups findings by file in a single vertical result stream. Search and severity filters narrow the stream, high-risk findings open by default, and each expanded item keeps its reason, source context, and exact diff together. Exact deletions, replacements, and insertions can be selected per item or per file and applied as one checked batch.
 

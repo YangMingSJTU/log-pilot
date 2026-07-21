@@ -7,6 +7,7 @@ from typing import Any
 
 from .models import ScanReport
 from .reporting import render_markdown
+from .result_store import RunResultStore
 
 
 def write_history_run(report: ScanReport, patch_text: str, output_dir: Path) -> dict[str, Any]:
@@ -51,8 +52,13 @@ def load_history_run(output_dir: Path, run_id: str) -> dict[str, Any]:
     if not run_dir.exists():
         raise FileNotFoundError(f"History run not found: {safe_id}")
 
-    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
-    patch = (run_dir / "changes.diff").read_text(encoding="utf-8", errors="ignore")
+    database = run_dir / "results.sqlite3"
+    if database.is_file():
+        report = RunResultStore(database).load_report_dict()
+    else:
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    patch_path = run_dir / "changes.diff"
+    patch = patch_path.read_text(encoding="utf-8", errors="ignore") if patch_path.is_file() else ""
     metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
     return {"metadata": metadata, "report": report, "patch": patch}
 

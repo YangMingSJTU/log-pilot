@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .config import RulesConfig
-from .models import Issue, LogCall, Severity, relative_path
+from .models import AnalysisTarget, Issue, LogCall, Severity, relative_path
 
 LOW_VALUE_MESSAGES = {
     "",
@@ -27,11 +27,43 @@ def analyze_rules(
     logs: list[LogCall],
     config: RulesConfig,
     enabled_languages: set[str] | None = None,
+    analysis_targets: list[AnalysisTarget] | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
     issues.extend(_log_call_issues(logs, config))
     issues.extend(_duplicate_issues(logs))
-    issues.extend(_missing_exception_logs(repo_root, enabled_languages))
+    if analysis_targets is None:
+        issues.extend(_missing_exception_logs(repo_root, enabled_languages))
+    else:
+        issues.extend(_missing_exception_issues_from_targets(analysis_targets, enabled_languages))
+    return issues
+
+
+def _missing_exception_issues_from_targets(
+    targets: list[AnalysisTarget],
+    enabled_languages: set[str] | None,
+) -> list[Issue]:
+    issues: list[Issue] = []
+    for target in targets:
+        if target.kind != "error_path" or target.metadata.get("has_log"):
+            continue
+        if enabled_languages is not None and target.language not in enabled_languages:
+            continue
+        issues.append(
+            Issue(
+                id=f"missing_exception_log:{target.file_path}:{target.start_line}",
+                file_path=target.file_path,
+                line=target.start_line,
+                severity=Severity.HIGH,
+                kind="missing_exception_log",
+                title="异常处理缺少错误日志",
+                reason="代码捕获了异常，但没有记录失败上下文。",
+                suggestion="请添加错误日志，记录操作名称和异常详情。",
+                source="rule",
+                context=target.context,
+                source_line=target.source_line,
+            )
+        )
     return issues
 
 

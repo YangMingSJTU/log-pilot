@@ -12,19 +12,20 @@ Use the local Python runtime to install and validate the project:
 - `python -m unittest discover -s tests` runs the test suite.
 - `python -m logpilot runtimes` checks local Codex and Claude runtimes.
 - `python -m logpilot scan .` scans the current repository.
+- `python -m logpilot scan . --module src` limits a run to a planned directory module.
 - `python -m logpilot apply . --run latest` selects exact changes to apply.
 - `python -m logpilot rollback .` restores the latest unchanged apply transaction.
 - `python -m logpilot ui` starts the local console and restores the last selected repository; add `--path .` to override it.
 
-Run `git diff --check` before submitting changes. Runtime dependencies are tracked in `requirements.lock`; keep it updated when dependencies are added. Treat the three Tree-sitter pins as one compatibility set and never upgrade one without running the real C/C++ regression scan.
+Run `git diff --check` before submitting. Update `requirements.lock` when dependencies change. Treat the Tree-sitter pins as one compatibility set and run the real C/C++ regression scan before upgrading them.
 
 ## Coding Style & Naming Conventions
 
-Use 4-space indentation for Python and keep modules focused around one responsibility: language registration, scanning, parsing, rules, runtime execution, AI, reporting, patching, CLI, or Web UI. Prefer dataclasses and explicit type hints for shared data structures. Register extensions and support levels in `src/logpilot/languages.py`; do not duplicate suffix maps. Keep Markdown headings sentence-case and use fenced code blocks with language labels.
+Use 4-space indentation for Python and keep modules focused around one responsibility: planning, scanning, parsing, rules, runtime execution, persistence, reporting, remediation, CLI, or Web UI. Prefer dataclasses and explicit type hints for shared data structures. Register extensions and support levels in `src/logpilot/languages.py`; do not duplicate suffix maps. New scan results belong in `results.sqlite3`; Web job objects must contain progress summaries only.
 
 ## Testing Guidelines
 
-Tests use Python `unittest` and should be added under `tests/` with names such as `test_pipeline.py`, `test_language_coverage.py`, or `test_remediation.py`. Cover parser behavior, unsupported-language coverage, AI degradation, user-data storage, report generation, exact apply validation, atomic rollback, and Web rendering. Set `LOGPILOT_DATA_DIR` to a temporary directory so tests never pollute the real profile.
+Tests use Python `unittest` and should be added under `tests/` with names such as `test_pipeline.py`, `test_large_repository.py`, or `test_remediation.py`. Cover module planning, chunk transactions, pagination limits, parser behavior, AI degradation, exact apply validation, recovery, and Web rendering. Set `LOGPILOT_DATA_DIR` to a temporary directory so tests never pollute the real profile.
 
 ## Commit & Pull Request Guidelines
 
