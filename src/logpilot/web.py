@@ -733,16 +733,61 @@ def _browse_initial_directory(raw_path: str, fallback: Path) -> Path:
 def _choose_directory_tk_subprocess(initial_dir: Path, timeout_seconds: int = 120) -> Path | None:
     script = r'''
 import sys
+import ctypes
+import os
+import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 
 initial_dir = sys.argv[1]
 root = tk.Tk()
-root.withdraw()
-root.update()
-root.attributes("-topmost", True)
 try:
+    # A withdrawn owner can leave the native Windows dialog behind the browser.
+    # Keep a nearly invisible real owner active so the chooser inherits its z-order.
+    root.title("LogPilot")
+    if sys.platform == "win32":
+        root.overrideredirect(True)
+        root.geometry("1x1+0+0")
+        root.attributes("-alpha", 0.01)
+        root.attributes("-topmost", True)
+        root.deiconify()
+        root.update_idletasks()
+        root.lift()
+        root.focus_force()
+        user32 = ctypes.windll.user32
+        hwnd = root.winfo_id()
+        owner = user32.GetAncestor(hwnd, 2) or hwnd
+        user32.ShowWindow(owner, 5)
+        user32.SetWindowPos(owner, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+        user32.SetForegroundWindow(owner)
+
+        def focus_picker_window():
+            process_id = os.getpid()
+            found = threading.Event()
+            callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+            def visit(window, _context):
+                window_process = ctypes.c_ulong()
+                user32.GetWindowThreadProcessId(window, ctypes.byref(window_process))
+                if window_process.value != process_id or window == owner or not user32.IsWindowVisible(window):
+                    return True
+                user32.ShowWindow(window, 5)
+                user32.SetWindowPos(window, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+                user32.SetForegroundWindow(window)
+                found.set()
+                return False
+
+            callback = callback_type(visit)
+            for _ in range(50):
+                user32.EnumWindows(callback, 0)
+                if found.wait(0.1):
+                    return
+
+        threading.Thread(target=focus_picker_window, daemon=True).start()
+    else:
+        root.withdraw()
+    root.update()
     selected = filedialog.askdirectory(
         parent=root,
         initialdir=initial_dir,
@@ -765,6 +810,7 @@ finally:
             env=env,
             check=False,
             timeout=timeout_seconds,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("选择窗口超时，请手动输入路径或重试。") from exc

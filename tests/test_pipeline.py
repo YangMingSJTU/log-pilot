@@ -10,6 +10,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -612,6 +613,41 @@ class PipelineTests(unittest.TestCase):
                 web_module.choose_directory = original_choose_directory
                 server.shutdown()
                 server.server_close()
+
+    def test_directory_picker_uses_visible_foreground_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as initial_tmp, tempfile.TemporaryDirectory() as selected_tmp:
+            initial = Path(initial_tmp).resolve()
+            selected = Path(selected_tmp).resolve()
+            completed = mock.Mock(returncode=0, stdout=f"{selected}\n", stderr="")
+
+            with mock.patch.object(web_module.subprocess, "run", return_value=completed) as run:
+                result = web_module._choose_directory_tk_subprocess(initial, timeout_seconds=17)
+
+            self.assertEqual(result, selected)
+            command = run.call_args.args[0]
+            script = command[2]
+            self.assertEqual(command[:2], [sys.executable, "-c"])
+            self.assertEqual(command[3], str(initial))
+            self.assertIn('if sys.platform == "win32":', script)
+            self.assertIn("else:\n        root.withdraw()", script)
+            self.assertIn('root.attributes("-topmost", True)', script)
+            self.assertIn("root.focus_force()", script)
+            self.assertIn("user32.SetForegroundWindow(owner)", script)
+            self.assertIn("user32.EnumWindows(callback, 0)", script)
+            self.assertIn("threading.Thread(target=focus_picker_window, daemon=True).start()", script)
+            self.assertIn("parent=root", script)
+            self.assertEqual(run.call_args.kwargs["timeout"], 17)
+            self.assertEqual(
+                run.call_args.kwargs["creationflags"],
+                getattr(web_module.subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+
+    def test_directory_picker_timeout_returns_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as initial_tmp:
+            timeout = web_module.subprocess.TimeoutExpired([sys.executable], 1)
+            with mock.patch.object(web_module.subprocess, "run", side_effect=timeout):
+                with self.assertRaisesRegex(RuntimeError, "选择窗口超时"):
+                    web_module._choose_directory_tk_subprocess(Path(initial_tmp), timeout_seconds=1)
 
     def test_web_repository_switch_is_remembered_across_server_restart(self) -> None:
         with tempfile.TemporaryDirectory() as first_tmp, tempfile.TemporaryDirectory() as second_tmp:
