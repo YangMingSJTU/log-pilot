@@ -321,6 +321,18 @@ def build_server(
                             raise ValueError("module_ids 必须是数组。")
                         module_ids = [str(item) for item in raw_module_ids]
                         selected_modules(plan, module_ids)
+                    if plan.source_files == 0:
+                        self._send_json(
+                            {"error": "当前目录未发现源码文件，请确认仓库路径或 .logpilot.yaml 排除规则。"},
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
+                        return
+                    if not plan.modules:
+                        self._send_json(
+                            {"error": "发现了源码候选，但没有可分析文件。请检查扩展名配置或超大文件限制。"},
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
+                        return
                     job = ScanJob(repository, selected_runtime.id)
                     job.run_id = resume_run_id or _new_web_run_id()
                     scan_jobs[job.id] = job
@@ -348,13 +360,6 @@ def build_server(
                 payload = self._read_json()
                 target = _validate_repository(_resolve_repo_path(str(payload.get("path", ""))))
                 config = load_config(target)
-                app_settings = settings_payload(target)["settings"]
-                if app_settings.get("language_mode") == "custom":
-                    from .settings import load_repository_settings, selected_extensions
-
-                    extensions = selected_extensions(load_repository_settings(target))
-                    if extensions is not None:
-                        config.scan.include_extensions = extensions
                 plan = build_scan_plan(
                     target,
                     config.scan,
@@ -1128,6 +1133,21 @@ def _html() -> str:
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .automatic-mode {
+      min-width: 0;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #151518;
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .automatic-mode::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
     .scan-progress {
       margin-bottom: 22px;
       border: 1px solid var(--line);
@@ -2211,9 +2231,10 @@ def _html() -> str:
           </div>
           <div class="analysis-options">
             <div class="analysis-option">
-              <span class="analysis-option-label">分析语言</span>
-              <div class="preset-control"><select id="analysisLanguagePreset" aria-label="分析语言方案"></select><button class="secondary preset-add" id="addLanguagePreset" type="button" title="新增语言方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button></div>
+              <span class="analysis-option-label">语言识别</span>
+              <span class="automatic-mode">自动识别</span>
               <span class="analysis-option-summary" id="analysisLanguageSummary"></span>
+              <select class="hidden" id="analysisLanguagePreset" aria-hidden="true"><option value="auto">自动识别</option></select><button class="hidden" id="addLanguagePreset" type="button" aria-hidden="true"></button>
             </div>
             <div class="analysis-option">
               <span class="analysis-option-label">日志模板</span>
@@ -2297,11 +2318,12 @@ def _html() -> str:
         <div class="settings-stack">
           <section class="settings-surface">
             <header class="settings-surface-header">
-              <div><h2>分析语言</h2><p>自动识别仓库语言，或固定本次分析范围</p></div>
-              <div class="mode-switch" id="languageMode" role="group" aria-label="语言识别模式"><button type="button" data-language-mode="auto">自动识别</button><button type="button" data-language-mode="custom">手动选择</button></div>
+              <div><h2>语言识别</h2><p>根据仓库源码自动识别并展示分析覆盖</p></div>
+              <span class="automatic-mode">自动识别</span>
             </header>
-            <div class="preset-library"><span class="preset-library-label">语言方案</span><select id="settingsLanguagePreset" aria-label="已保存的语言方案"></select><button class="secondary" id="loadLanguagePreset" type="button">载入</button><button class="secondary" id="saveLanguagePreset" type="button">保存当前</button><button class="secondary icon-only" id="deleteLanguagePreset" type="button" title="删除语言方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg></button></div>
             <div class="language-options" id="languageOptions"></div>
+            <div class="hidden" id="languageMode" aria-hidden="true"><button type="button" data-language-mode="auto"></button></div>
+            <select class="hidden" id="settingsLanguagePreset" aria-hidden="true"></select><button class="hidden" id="loadLanguagePreset" type="button"></button><button class="hidden" id="saveLanguagePreset" type="button"></button><button class="hidden" id="deleteLanguagePreset" type="button"></button>
           </section>
           <section class="settings-surface">
             <header class="settings-surface-header">
@@ -2822,7 +2844,10 @@ def _html() -> str:
           ...(payload.settings || {}),
           templates: { ...(payload.settings?.templates || {}) },
           language_presets: [...(payload.settings?.language_presets || [])],
-          template_presets: [...(payload.settings?.template_presets || [])]
+          template_presets: [...(payload.settings?.template_presets || [])],
+          language_mode: "auto",
+          selected_languages: [],
+          active_language_preset: "auto"
         };
         state.languageProfile = payload.profile || { detected_languages: [], template_recommendations: {} };
         state.settingsLanguages = payload.languages || [];
@@ -2852,6 +2877,9 @@ def _html() -> str:
         showToast("请先输入或选择本地仓库路径", "warning");
         return false;
       }
+      state.repositorySettings.language_mode = "auto";
+      state.repositorySettings.selected_languages = [];
+      state.repositorySettings.active_language_preset = "auto";
       state.settingsBusy = true;
       updateSettingsBusy();
       try {
@@ -2942,11 +2970,6 @@ def _html() -> str:
         return;
       }
       if (target !== state.path && !await activateRepository(target, true)) return;
-      const runtime = selectedRuntime();
-      if (!runtime) {
-        showToast("没有可用运行时，请先在运行时页面检查 Codex 或 Claude", "warning");
-        return;
-      }
       if (!await persistRepositorySettings(true)) return;
       scanButton.disabled = true;
       showToast("正在预检仓库并规划目录...", "info", 0);
@@ -2959,6 +2982,16 @@ def _html() -> str:
         const planPayload = await planResponse.json();
         if (!planResponse.ok || planPayload.error) throw new Error(planPayload.error || "仓库预检失败");
         const plan = planPayload.plan;
+        if (!Number(plan.source_files || 0) || !plan.modules.length) {
+          renderNoSourcePlan(plan);
+          const message = Number(plan.source_files || 0)
+            ? "发现了源码候选，但没有可分析文件"
+            : "当前目录未发现源码文件";
+          showToast(message, "warning");
+          return;
+        }
+        const runtime = selectedRuntime();
+        if (!runtime) throw new Error("没有可用运行时，请先在运行时页面检查 Codex 或 Claude");
         if (plan.large_repository && plan.modules.length > 1) {
           openScanPlan(plan, target, runtime);
           scanButton.disabled = false;
@@ -3672,9 +3705,6 @@ def _html() -> str:
     }
 
     function resolvedLanguageIds() {
-      if (state.repositorySettings.language_mode === "custom" && state.repositorySettings.selected_languages.length) {
-        return [...state.repositorySettings.selected_languages];
-      }
       const detected = (state.languageProfile.detected_languages || [])
         .filter(item => item.recommended)
         .map(item => item.id);
@@ -3883,17 +3913,13 @@ def _html() -> str:
         button.classList.toggle("active", button.dataset.languageMode === settings.language_mode);
       });
       const detected = new Map((state.languageProfile.detected_languages || []).map(item => [item.id, item]));
-      languageOptions.innerHTML = state.settingsLanguages.map(language => {
+      const detectedLanguages = state.settingsLanguages.filter(language => Number(detected.get(language.id)?.file_count || 0) > 0);
+      languageOptions.innerHTML = detectedLanguages.length ? detectedLanguages.map(language => {
         const profile = detected.get(language.id) || {};
-        const checked = settings.language_mode === "auto"
-          ? Boolean(profile.recommended)
-          : settings.selected_languages.includes(language.id);
         const support = language.support_level === "unsupported" ? "暂不支持" : language.support_level === "limited" ? "有限支持" : "完整支持";
-        const stats = profile.file_count
-          ? `${profile.file_count} 个文件 · ${profile.log_count || 0} 条日志 · ${support}`
-          : "未在仓库中发现";
-        return `<label class="language-option"><input type="checkbox" data-language-id="${esc(language.id)}" ${checked ? "checked" : ""} ${settings.language_mode === "auto" ? "disabled" : ""}><span><strong>${esc(language.label)}${profile.recommended ? " <em>推荐</em>" : ""}</strong><span>${esc(stats)}</span></span></label>`;
-      }).join("");
+        const stats = `${profile.file_count} 个文件 · ${profile.log_count || 0} 条日志 · ${support}`;
+        return `<div class="language-option"><span class="state-dot ${language.support_level === "unsupported" ? "offline" : ""}"></span><span><strong>${esc(language.label)}</strong><span>${esc(stats)}</span></span></div>`;
+      }).join("") : '<div class="empty">尚未生成仓库语言画像</div>';
       templateLanguageNav.innerHTML = state.settingsLanguages.map(language => `
         <button class="${language.id === state.templateLanguage ? "active" : ""}" type="button" data-template-language="${esc(language.id)}"><span>${esc(language.label)}</span><span>${esc(templateSourceText(language.id, true))}</span></button>
       `).join("");
@@ -3986,6 +4012,18 @@ def _html() -> str:
       incrementalNote.classList.add("hidden");
       updateResultFilters();
       renderDiagnostics();
+    }
+
+    function renderNoSourcePlan(plan) {
+      renderEmpty();
+      const discovered = Number(plan?.source_files || 0);
+      const message = discovered
+        ? `发现 ${discovered} 个源码候选，但没有可分析文件。请检查 .logpilot.yaml 扩展名配置或超大文件限制。`
+        : "当前目录未发现源码文件。请确认仓库路径或 .logpilot.yaml 排除规则。";
+      resultsSummary.textContent = "未发现可分析源码";
+      resultStream.innerHTML = `<div class="results-empty">${esc(message)}</div>`;
+      coverageBanner.classList.remove("hidden", "complete", "failure");
+      coverageBanner.innerHTML = `<strong>未启动分析</strong>：${esc(message)}`;
     }
 
     function renderReport(report, incremental = false) {

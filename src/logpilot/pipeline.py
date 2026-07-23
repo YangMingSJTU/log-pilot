@@ -37,7 +37,6 @@ from .settings import (
     build_language_profile,
     load_language_profile,
     load_repository_settings,
-    selected_extensions,
 )
 from .storage import initialize_repository_storage
 
@@ -69,9 +68,6 @@ def run_scan(
         _check_cancel(should_cancel)
         config = load_config(repo_root, config_path)
         settings = load_repository_settings(repo_root)
-        extensions = selected_extensions(settings)
-        if extensions is not None:
-            config.scan.include_extensions = extensions
 
         if plan is None:
             plan = load_scan_plan(repo_root, plan_id) if plan_id else build_scan_plan(
@@ -97,7 +93,6 @@ def run_scan(
         _emit(progress, "discovering", 1, 1, f"已规划 {len(modules)} 个目录模块", store=store)
 
         profile = load_language_profile(repo_root)
-        enabled_languages = set(settings.selected_languages) if settings.language_mode == "custom" else None
         completed_chunks = store.completed_chunk_ids() if resume else set()
         native_client = NativeParserClient()
         total_chunks = sum(len(module.chunks) for module in modules)
@@ -131,7 +126,7 @@ def run_scan(
                             repo_root,
                             scan.logs,
                             config.rules,
-                            enabled_languages,
+                            None,
                             scan.analysis_targets,
                         )
                         attach_fix_proposals(repo_root, scan.logs, local_issues, settings, profile)
@@ -219,7 +214,7 @@ def run_scan(
             _check_cancel(should_cancel)
             counts = store.aggregate_counts()
             ai_status = "skipped" if not ai_requested else ("complete" if ai_complete else "partial")
-            summary = _build_summary(repo_root, plan, summary_modules, counts, ai_status, settings.language_mode)
+            summary = _build_summary(repo_root, plan, summary_modules, counts, ai_status, "auto")
             store.finish_run(asdict(summary))
             _write_run_metadata(store, summary, runtime_id or config.ai.runtime)
 

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 import urllib.request
+import urllib.error
 from dataclasses import asdict
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -16,7 +20,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from logpilot import planning
-from logpilot.config import ScanConfig
+from logpilot.config import ScanConfig, load_config
 from logpilot.models import Issue, LogCall, Severity
 from logpilot.pipeline import run_scan
 from logpilot.planning import build_scan_plan, save_scan_plan
@@ -54,6 +58,124 @@ class LargeRepositoryTests(unittest.TestCase):
 
             self.assertEqual([module.path for module in first.modules], ["packages/web", "services/api"])
             self.assertEqual([module.id for module in first.modules], [module.id for module in second.modules])
+
+    @unittest.skipUnless(shutil.which("git"), "Git is required for nested repository discovery")
+    def test_untracked_directory_with_nested_git_repository_falls_back_to_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            subprocess.run(["git", "init", str(parent)], check=True, capture_output=True)
+            selected = parent / "DTView"
+            nested = selected / "vendor"
+            nested.mkdir(parents=True)
+            subprocess.run(["git", "init", str(nested)], check=True, capture_output=True)
+            (selected / "main.cpp").write_text("qDebug() << 1;\n", encoding="utf-8")
+            (nested / "library.cpp").write_text("LOG(INFO) << 1;\n", encoding="utf-8")
+
+            plan = build_scan_plan(selected, ScanConfig())
+
+            self.assertEqual(plan.discovery_method, "walk")
+            self.assertEqual(plan.source_files, 2)
+            self.assertEqual(plan.selected_files, 2)
+            self.assertEqual(plan.discovered_languages, {"cpp": 2})
+            self.assertEqual(
+                [item.path for module in plan.modules for chunk in module.chunks for item in chunk.files],
+                ["main.cpp", "vendor/library.cpp"],
+            )
+
+    def test_git_directory_entry_falls_back_and_discovers_cpp_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            nested = repo / "nested"
+            nested.mkdir()
+            source = nested / "service.cpp"
+            source.write_text("qWarning() << 1;\n", encoding="utf-8")
+            completed = mock.Mock(returncode=0, stdout=b"nested\0")
+
+            with mock.patch.object(planning.subprocess, "run", return_value=completed):
+                plan = build_scan_plan(repo, ScanConfig())
+
+            self.assertEqual(plan.discovery_method, "walk")
+            self.assertEqual(plan.source_files, 1)
+            self.assertEqual(plan.modules[0].chunks[0].files[0].path, "nested/service.cpp")
+
+    def test_empty_git_result_falls_back_to_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "service.cpp").write_text("printf(\"ready\");\n", encoding="utf-8")
+            completed = mock.Mock(returncode=0, stdout=b"")
+
+            with mock.patch.object(planning.subprocess, "run", return_value=completed):
+                plan = build_scan_plan(repo, ScanConfig())
+
+            self.assertEqual(plan.discovery_method, "walk")
+            self.assertEqual(plan.source_files, 1)
+            self.assertEqual(plan.selected_files, 1)
+
+    def test_walk_fallback_respects_repository_excludes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "src").mkdir()
+            (repo / "vendor").mkdir()
+            (repo / ".git").mkdir()
+            (repo / "src" / "main.cpp").write_text("qDebug() << 1;\n", encoding="utf-8")
+            (repo / "vendor" / "ignored.cpp").write_text("qDebug() << 2;\n", encoding="utf-8")
+            (repo / ".git" / "ignored.cpp").write_text("qDebug() << 3;\n", encoding="utf-8")
+            (repo / ".logpilot.yaml").write_text("scan:\n  exclude:\n    - .git\n    - vendor\n", encoding="utf-8")
+            completed = mock.Mock(returncode=0, stdout=b"")
+
+            with mock.patch.object(planning.subprocess, "run", return_value=completed):
+                plan = build_scan_plan(repo, load_config(repo).scan)
+
+            self.assertEqual(plan.source_files, 1)
+            self.assertEqual(
+                [item.path for module in plan.modules for chunk in module.chunks for item in chunk.files],
+                ["src/main.cpp"],
+            )
+
+    def test_truly_empty_directory_remains_empty_after_git_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            completed = mock.Mock(returncode=0, stdout=b"")
+
+            with mock.patch.object(planning.subprocess, "run", return_value=completed):
+                plan = build_scan_plan(repo, ScanConfig())
+
+            self.assertEqual(plan.discovery_method, "walk")
+            self.assertEqual(plan.source_files, 0)
+            self.assertEqual(plan.selected_files, 0)
+            self.assertEqual(plan.modules, [])
+
+    def test_web_rejects_starting_an_empty_scan_plan(self) -> None:
+        class RuntimeRegistry:
+            def resolve(self, _runtime_id):
+                return mock.Mock(id="test")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            plan = build_scan_plan(repo, ScanConfig())
+            save_scan_plan(plan)
+            server = build_server(repo, port=0, runtime_registry=RuntimeRegistry())
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                request = urllib.request.Request(
+                    f"http://{host}:{port}/api/scans",
+                    data=json.dumps({"path": str(repo), "runtime": "test", "plan_id": plan.id}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request, timeout=10)
+                try:
+                    payload = json.loads(caught.exception.read().decode("utf-8"))
+                    self.assertEqual(caught.exception.code, 422)
+                    self.assertIn("未发现源码文件", payload["error"])
+                finally:
+                    caught.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
 
     def test_chunk_boundaries_are_stable_by_file_count_and_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

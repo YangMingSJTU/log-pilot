@@ -202,7 +202,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(config.rules.forbidden_logs, ["print", "console.log"])
             self.assertIn("vendor", config.scan.exclude)
 
-    def test_custom_language_selection_limits_scanned_files(self) -> None:
+    def test_saved_language_selection_does_not_limit_automatic_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / "service.py").write_text("print('python')\n", encoding="utf-8")
@@ -221,9 +221,9 @@ class PipelineTests(unittest.TestCase):
 
             report = run_scan(repo)
 
-            self.assertEqual(report.summary.files_scanned, 1)
+            self.assertEqual(report.summary.files_scanned, 2)
             self.assertTrue(report.logs)
-            self.assertEqual({log.language for log in report.logs}, {"java"})
+            self.assertEqual({log.language for log in report.logs}, {"java", "python"})
 
     def test_web_shell_contains_analysis_controls(self) -> None:
         html = _html()
@@ -243,6 +243,9 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('id="analysisTemplatePreset"', html)
         self.assertIn('id="addLanguagePreset"', html)
         self.assertIn('id="addTemplatePreset"', html)
+        self.assertIn('class="automatic-mode">自动识别</span>', html)
+        self.assertNotIn("手动选择", html)
+        self.assertIn("未发现可分析源码", html)
         self.assertIn('id="resultSearch"', html)
         self.assertIn('id="severityFilters"', html)
         self.assertIn('id="actionFilters"', html)

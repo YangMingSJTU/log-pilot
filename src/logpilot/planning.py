@@ -275,8 +275,12 @@ def _git_files(repo_root: Path) -> list[Path] | None:
             continue
         relative = raw.decode("utf-8", errors="surrogateescape")
         candidate = repo_root / relative
+        if candidate.is_dir():
+            return None
         if candidate.is_file():
             paths.append(candidate)
+    if not paths:
+        return None
     return sorted(paths, key=lambda path: path.relative_to(repo_root).as_posix().casefold())
 
 
