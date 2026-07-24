@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
@@ -43,6 +44,7 @@ from .storage import initialize_repository_storage
 
 ScanProgress = Callable[[dict[str, Any]], None]
 _AI_PAGE_SIZE = 500
+logger = logging.getLogger("logpilot.pipeline")
 
 
 def run_scan(
@@ -89,6 +91,15 @@ def run_scan(
             store.mark_running_interrupted()
         summary_modules = selected_modules(plan, store.selected_module_ids()) if resume else modules
         store.start_run()
+        logger.info(
+            "scan_started run_id=%s repository=%s modules=%s runtime=%s depth=%s resume=%s",
+            resolved_run_id,
+            repo_root,
+            len(modules),
+            runtime_id or config.ai.runtime,
+            settings.analysis_depth,
+            resume,
+        )
         _write_running_metadata(store, plan, runtime_id or config.ai.runtime, summary_modules)
         _emit(progress, "discovering", 1, 1, f"已规划 {len(modules)} 个目录模块", store=store)
 
@@ -153,6 +164,13 @@ def run_scan(
                     except InterruptedError:
                         raise
                     except Exception as exc:
+                        logger.exception(
+                            "scan_chunk_failed run_id=%s module_id=%s chunk_id=%s files=%s",
+                            resolved_run_id,
+                            module.id,
+                            chunk.id,
+                            len(chunk.files),
+                        )
                         store.record_chunk_failure(
                             module.id,
                             chunk.id,
@@ -221,6 +239,14 @@ def run_scan(
             if not return_report:
                 _emit(progress, "complete", 1, 1, "分析完成", store=store)
                 _enforce_retention(output_dir)
+                logger.info(
+                    "scan_completed run_id=%s files=%s logs=%s issues=%s ai_status=%s",
+                    resolved_run_id,
+                    counts.get("files_scanned", 0),
+                    counts.get("log_count", 0),
+                    counts.get("issue_count", 0),
+                    ai_status,
+                )
                 return None
 
             report = report_from_dict(store.load_report_dict())
@@ -237,12 +263,22 @@ def run_scan(
             (run_dir / "changes.diff").write_text(patch_text, encoding="utf-8")
             _emit(progress, "complete", 1, 1, "分析完成", store=store)
             _enforce_retention(output_dir)
+            logger.info(
+                "scan_completed run_id=%s files=%s logs=%s issues=%s ai_status=%s",
+                resolved_run_id,
+                counts.get("files_scanned", 0),
+                counts.get("log_count", 0),
+                counts.get("issue_count", 0),
+                ai_status,
+            )
             return report
         except InterruptedError:
+            logger.info("scan_cancelled run_id=%s", resolved_run_id)
             store.finish_run(store.progress().get("summary", {}), status="cancelled")
             _update_metadata_status(store, "cancelled")
             raise
         except Exception as exc:
+            logger.exception("scan_failed run_id=%s", resolved_run_id)
             store.finish_run(store.progress().get("summary", {}), status="failed", error=str(exc))
             _update_metadata_status(store, "failed", str(exc))
             raise

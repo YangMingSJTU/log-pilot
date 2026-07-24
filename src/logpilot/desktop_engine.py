@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 
+from .app_logging import configure_logging, shutdown_logging
 from .storage import app_data_root
 from .web import API_VERSION, build_server
 
 
 def main(argv: list[str] | None = None) -> None:
+    log_path = configure_logging("desktop-engine")
+    logger = logging.getLogger("logpilot.desktop_engine")
     parser = argparse.ArgumentParser(prog="logpilot-engine", description="Run the LogPilot desktop API engine.")
     parser.add_argument("--path", default=None, help="Initial repository path.")
     parser.add_argument("--host", default="127.0.0.1", help="Loopback address to bind.")
@@ -31,6 +35,14 @@ def main(argv: list[str] | None = None) -> None:
         auth_token=args.token,
         allow_shutdown=True,
     )
+    logger.info(
+        "engine_started pid=%s host=%s port=%s repository=%s log=%s",
+        os.getpid(),
+        args.host,
+        int(server.server_address[1]),
+        initial or "last-selected",
+        log_path,
+    )
     connection = {
         "baseUrl": f"http://127.0.0.1:{int(server.server_address[1])}",
         "apiVersion": API_VERSION,
@@ -48,10 +60,13 @@ def main(argv: list[str] | None = None) -> None:
     try:
         server.serve_forever()
     finally:
+        logger.info("engine_stopping pid=%s", os.getpid())
         server.shutdown_active_processes()  # type: ignore[attr-defined]
         server.server_close()
         if args.ready_file:
             Path(args.ready_file).unlink(missing_ok=True)
+        logger.info("engine_stopped pid=%s", os.getpid())
+        shutdown_logging()
 
 
 if __name__ == "__main__":

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
+from .app_logging import configure_logging, shutdown_logging
 from .pipeline import retry_module, run_scan
 
 
@@ -23,7 +25,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cancel-file", required=True)
     args = parser.parse_args(argv)
+    configure_logging("scan-runner")
+    logger = logging.getLogger("logpilot.scan_runner")
     cancel_file = Path(args.cancel_file)
+    logger.info(
+        "scan_process_started run_id=%s repository=%s runtime=%s modules=%s retry_module=%s resume=%s",
+        args.run,
+        Path(args.repository).resolve(),
+        args.runtime,
+        len(args.module),
+        args.retry_module or "none",
+        args.resume,
+    )
 
     def emit(event: dict[str, object]) -> None:
         print(json.dumps({"type": "progress", "event": event}, ensure_ascii=False), flush=True)
@@ -54,9 +67,12 @@ def main(argv: list[str] | None = None) -> int:
                 return_report=False,
             )
     except InterruptedError:
+        logger.info("scan_process_cancelled run_id=%s", args.run)
         print(json.dumps({"type": "cancelled", "run_id": args.run}, ensure_ascii=False), flush=True)
+        shutdown_logging()
         return 2
     except Exception as exc:
+        logger.exception("scan_process_failed run_id=%s", args.run)
         print(
             json.dumps(
                 {"type": "failed", "run_id": args.run, "error": f"{type(exc).__name__}: {exc}"},
@@ -64,8 +80,11 @@ def main(argv: list[str] | None = None) -> int:
             ),
             flush=True,
         )
+        shutdown_logging()
         return 1
+    logger.info("scan_process_completed run_id=%s", args.run)
     print(json.dumps({"type": "completed", "run_id": args.run}, ensure_ascii=False), flush=True)
+    shutdown_logging()
     return 0
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections import Counter
@@ -15,6 +16,7 @@ from .parsers import parse_file_with_targets
 
 
 ScanFileProgress = Callable[[int, int, str], None]
+logger = logging.getLogger("logpilot.scanner")
 
 
 @dataclass(slots=True)
@@ -113,6 +115,14 @@ def scan_repository_detailed(
                         native_client = (native_client_factory or NativeParserClient)()
                     result = native_client.parse_file(path, repo_root, language, should_cancel)
                     if result.failure:
+                        logger.warning(
+                            "source_parse_failed file=%s language=%s error_kind=%s exit_code=%s message=%s",
+                            result.failure.file_path,
+                            result.failure.language,
+                            result.failure.error_kind,
+                            result.failure.worker_exit_code,
+                            result.failure.message,
+                        )
                         failed_counts[language] += 1
                         parse_failures.append(result.failure)
                         continue
@@ -122,6 +132,7 @@ def scan_repository_detailed(
             except InterruptedError:
                 raise
             except Exception as exc:
+                logger.exception("source_parse_failed file=%s language=%s", rel, language)
                 failed_counts[language] += 1
                 parse_failures.append(
                     ParseFailure(

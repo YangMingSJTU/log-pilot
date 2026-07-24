@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import secrets
@@ -15,8 +16,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .history import list_history_runs, load_history_run
+from .app_logging import log_directory
 from .config import load_config
+from .history import list_history_runs, load_history_run
 from .locking import RepositoryBusyError, repository_operation_lock
 from .parsers import LANGUAGE_BY_SUFFIX
 from .patching import generate_patch
@@ -44,6 +46,7 @@ from .storage import initialize_repository_storage, load_last_repository, reposi
 
 
 API_VERSION = 1
+logger = logging.getLogger("logpilot.web")
 DESKTOP_ORIGINS = {
     "http://127.0.0.1:5173",
     "http://localhost:5173",
@@ -85,6 +88,13 @@ def build_server(
             state["runtime_id"] = runtime_id
 
     def execute_scan_job(job: ScanJob, target: Path, runtime) -> None:
+        logger.info(
+            "scan_job_started job_id=%s run_id=%s repository=%s runtime=%s mode=in_process",
+            job.id,
+            job.run_id,
+            target,
+            runtime.id,
+        )
         try:
             report = run_scan(
                 target,
@@ -98,10 +108,13 @@ def build_server(
             history = list_history_runs(state["artifacts"])
             run_id = str(history[0].get("run_id", "")) if history else ""
             job.complete(report, run_id)
+            logger.info("scan_job_completed job_id=%s run_id=%s", job.id, run_id)
         except InterruptedError:
             job.cancel()
+            logger.info("scan_job_cancelled job_id=%s run_id=%s", job.id, job.run_id)
         except Exception as exc:
             job.fail(str(exc))
+            logger.exception("scan_job_failed job_id=%s run_id=%s", job.id, job.run_id)
 
     def execute_scan_subprocess(
         job: ScanJob,
@@ -142,19 +155,33 @@ def build_server(
         source_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            shell=False,
-            env=env,
-            creationflags=creationflags,
-            start_new_session=os.name != "nt",
+        logger.info(
+            "scan_job_started job_id=%s run_id=%s repository=%s runtime=%s modules=%s mode=subprocess",
+            job.id,
+            job.run_id,
+            target,
+            runtime.id,
+            len(module_ids),
         )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                shell=False,
+                env=env,
+                creationflags=creationflags,
+                start_new_session=os.name != "nt",
+            )
+        except Exception:
+            logger.exception("scan_process_start_failed job_id=%s run_id=%s", job.id, job.run_id)
+            job.fail("无法启动分析进程，请查看应用日志。")
+            return
+        logger.info("scan_process_spawned job_id=%s run_id=%s pid=%s", job.id, job.run_id, process.pid)
         with scan_jobs_lock:
             scan_processes[job.id] = (process, cancel_file)
         terminal_seen = False
@@ -172,12 +199,20 @@ def build_server(
                     terminal_seen = True
                     activate_repository(target, runtime.id)
                     job.complete(None, job.run_id)
+                    logger.info("scan_job_completed job_id=%s run_id=%s", job.id, job.run_id)
                 elif kind == "cancelled":
                     terminal_seen = True
                     job.cancel()
+                    logger.info("scan_job_cancelled job_id=%s run_id=%s", job.id, job.run_id)
                 elif kind == "failed":
                     terminal_seen = True
                     job.fail(str(payload.get("error", "分析进程失败。")))
+                    logger.error(
+                        "scan_job_failed job_id=%s run_id=%s error=%s",
+                        job.id,
+                        job.run_id,
+                        payload.get("error", "分析进程失败。"),
+                    )
             return_code = process.wait()
             if not terminal_seen:
                 error = process.stderr.read().strip() if process.stderr else ""
@@ -185,11 +220,19 @@ def build_server(
                     job.cancel()
                 else:
                     job.fail(error or f"分析进程异常退出（exit code {return_code}）。")
+                    logger.error(
+                        "scan_process_exited job_id=%s run_id=%s exit_code=%s stderr=%s",
+                        job.id,
+                        job.run_id,
+                        return_code,
+                        error[-2000:] if error else "empty",
+                    )
         except Exception as exc:
             if job.should_cancel():
                 job.cancel()
             else:
                 job.fail(str(exc))
+                logger.exception("scan_job_failed job_id=%s run_id=%s", job.id, job.run_id)
         finally:
             cancel_file.unlink(missing_ok=True)
             with scan_jobs_lock:
@@ -243,6 +286,7 @@ def build_server(
                         "name": "LogPilot Engine",
                         "api_version": API_VERSION,
                         "shutdown_enabled": allow_shutdown,
+                        "log_directory": str(log_directory()),
                     }
                 )
             elif parsed.path == "/api/state":
@@ -414,6 +458,7 @@ def build_server(
                     HTTPStatus.ACCEPTED,
                 )
             except Exception as exc:  # Keep the local UI useful during early scanner work.
+                logger.exception("scan_request_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_scan_plan(self) -> None:
@@ -431,6 +476,7 @@ def build_server(
             except (OSError, ValueError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("scan_plan_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _send_run_issues(self, path: str, query: str) -> None:
@@ -522,6 +568,7 @@ def build_server(
             except (OSError, ValueError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("module_retry_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _send_latest_report(self) -> None:
@@ -600,6 +647,13 @@ def build_server(
                     raise RemediationError("问题 ID 必须使用数组传递。")
                 issue_ids = [str(issue_id) for issue_id in raw_issue_ids]
                 record = apply_suggestions(state["repo_root"], run_id, issue_ids)
+                logger.info(
+                    "apply_completed repository=%s run_id=%s apply_id=%s issues=%s",
+                    state["repo_root"],
+                    run_id,
+                    record.get("apply_id", "unknown"),
+                    len(issue_ids),
+                )
                 self._send_json(
                     {
                         "record": record,
@@ -615,6 +669,7 @@ def build_server(
             except RemediationError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("apply_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_rollback(self) -> None:
@@ -622,6 +677,11 @@ def build_server(
                 payload = self._read_json()
                 apply_id = str(payload.get("apply_id", "")).strip() or None
                 record = rollback_apply(state["repo_root"], apply_id)
+                logger.info(
+                    "rollback_completed repository=%s apply_id=%s",
+                    state["repo_root"],
+                    record.get("apply_id", apply_id or "latest"),
+                )
                 self._send_json(
                     {
                         "record": record,
@@ -637,6 +697,7 @@ def build_server(
             except RemediationError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("rollback_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_repository_select(self) -> None:
@@ -644,10 +705,12 @@ def build_server(
                 payload = self._read_json()
                 target = _validate_repository(_resolve_repo_path(str(payload.get("path", ""))))
                 activate_repository(target)
+                logger.info("repository_selected repository=%s", target)
                 self._send_json(_state_payload(state))
             except (OSError, ValueError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("repository_select_failed")
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_settings_save(self) -> None:
@@ -660,10 +723,12 @@ def build_server(
                 if not isinstance(raw_settings, dict):
                     raise SettingsError("设置内容必须是对象。")
                 save_repository_settings(target, raw_settings)
+                logger.info("settings_saved repository=%s", target)
                 self._send_json({"repository": str(target), **settings_payload(target)})
             except SettingsError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("settings_save_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _handle_settings_profile(self) -> None:
@@ -689,6 +754,7 @@ def build_server(
             except SettingsError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
+                logger.exception("settings_profile_failed repository=%s", state["repo_root"])
                 self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _send_history_run(self, query: str) -> None:
@@ -757,6 +823,14 @@ def build_server(
 
     server = ThreadingHTTPServer((host, port), Handler)
     server.shutdown_active_processes = stop_all_scan_processes  # type: ignore[attr-defined]
+    logger.info(
+        "web_server_created host=%s port=%s repository=%s authenticated=%s shutdown_enabled=%s",
+        host,
+        int(server.server_address[1]),
+        initial_root,
+        bool(auth_token),
+        allow_shutdown,
+    )
     return server
 
 
@@ -781,11 +855,14 @@ def serve(
     print(f"LogPilot UI: http://{host}:{actual_port}")
     print(f"Default repository: {initial_root}")
     print(f"Reading artifacts from: {artifacts}")
+    logger.info("web_server_started url=http://%s:%s repository=%s", host, actual_port, initial_root)
     try:
         server.serve_forever()
     finally:
+        logger.info("web_server_stopping url=http://%s:%s", host, actual_port)
         server.shutdown_active_processes()  # type: ignore[attr-defined]
         server.server_close()
+        logger.info("web_server_stopped url=http://%s:%s", host, actual_port)
 
 
 def _initial_repository(repo_root: Path | None) -> Path:

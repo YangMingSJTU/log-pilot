@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .app_logging import configure_logging, shutdown_logging
 from .native_parser import parse_c_family_file
+
+
+logger = logging.getLogger("logpilot.native_parser_worker")
 
 
 def _response(request_id: str, **payload: Any) -> None:
@@ -25,6 +30,7 @@ def _handle_request(request: dict[str, Any]) -> None:
             raise ValueError("请求字段无效。")
         file_path.relative_to(repo_root)
     except (KeyError, OSError, ValueError) as exc:
+        logger.warning("native_parse_protocol_error request_id=%s error=%s", request_id or "missing", exc)
         _response(
             request_id,
             status="error",
@@ -36,6 +42,12 @@ def _handle_request(request: dict[str, Any]) -> None:
     try:
         logs, targets = parse_c_family_file(file_path, repo_root, language)
     except Exception as exc:
+        logger.exception(
+            "native_parse_failed request_id=%s file=%s language=%s",
+            request_id,
+            file_path,
+            language,
+        )
         _response(
             request_id,
             status="error",
@@ -52,16 +64,22 @@ def _handle_request(request: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    configure_logging("native-parser")
+    logger.info("native_parser_started")
     for line in sys.stdin:
         try:
             request = json.loads(line)
         except json.JSONDecodeError as exc:
+            logger.warning("native_parser_invalid_json error=%s", exc)
             _response("", status="error", error_kind="protocol_error", message=f"请求不是有效 JSON：{exc}")
             continue
         if not isinstance(request, dict):
+            logger.warning("native_parser_invalid_request_type type=%s", type(request).__name__)
             _response("", status="error", error_kind="protocol_error", message="请求必须是 JSON 对象。")
             continue
         _handle_request(request)
+    logger.info("native_parser_stopped")
+    shutdown_logging()
     return 0
 
 

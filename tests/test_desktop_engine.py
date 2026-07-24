@@ -58,6 +58,7 @@ class DesktopEngineTests(unittest.TestCase):
                 with urllib.request.urlopen(metadata_request, timeout=10) as response:
                     metadata = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(metadata["name"], "LogPilot Engine")
+                self.assertEqual(metadata["log_directory"], str(data_dir / "logs"))
 
                 shutdown_request = urllib.request.Request(
                     f"{connection['baseUrl']}/api/shutdown",
@@ -69,6 +70,12 @@ class DesktopEngineTests(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                 self.assertEqual(process.wait(timeout=10), 0)
                 self.assertFalse(ready_file.exists())
+                engine_log = data_dir / "logs" / "logpilot-desktop-engine.log"
+                self.assertTrue(engine_log.is_file())
+                log_text = engine_log.read_text(encoding="utf-8")
+                self.assertIn("engine_started", log_text)
+                self.assertIn("engine_stopped", log_text)
+                self.assertNotIn("integration-token", log_text)
             finally:
                 if process.poll() is None:
                     process.terminate()

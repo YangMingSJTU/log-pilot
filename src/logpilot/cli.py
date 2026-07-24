@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .app_logging import configure_logging, shutdown_logging
 from .history import list_history_runs, load_history_run
 from .pipeline import run_scan
 from .planning import build_scan_plan, resolve_module_selectors, save_scan_plan
@@ -61,7 +62,11 @@ def main(argv: list[str] | None = None) -> None:
     rollback_parser.set_defaults(func=_rollback)
 
     args = parser.parse_args(argv)
-    args.func(args)
+    configure_logging("web" if args.command == "ui" else "cli")
+    try:
+        args.func(args)
+    finally:
+        shutdown_logging()
 
 
 def _scan(args) -> None:

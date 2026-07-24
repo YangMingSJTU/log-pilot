@@ -26,6 +26,12 @@ The selected repository is not used for generated artifacts. Reports, history, p
 
 Set `LOGPILOT_DATA_DIR` to override the root directory for tests or isolated environments. A repository may still contain a user-maintained `.logpilot.yaml` scan configuration; LogPilot never creates it.
 
+## Diagnostic logs
+
+LogPilot writes operational diagnostics to the user data directory under `logs/`. On Windows this is `%LOCALAPPDATA%\LogPilot\logs\`; macOS uses `~/Library/Application Support/LogPilot/logs/`, and Linux uses `$XDG_DATA_HOME/logpilot/logs/`. The desktop bootstrap, Engine, scan runner, and native C/C++ parser use separate files so startup failures and parser crashes remain visible. Each log rotates at 5 MiB and keeps three backups.
+
+Set `LOGPILOT_LOG_LEVEL=DEBUG` before launch for additional Python diagnostics. Logs include lifecycle events, repository paths, run identifiers, progress counts, and exception stacks. They intentionally exclude authentication tokens, source contents, prompts, and raw AI responses. The Engine also returns the active log directory from `/api/meta` for support tooling.
+
 Large repositories use bounded execution. LogPilot profiles the repository with `git ls-files` when available, identifies project modules, and splits each selected module into hidden chunks of at most 1,000 files or 128 MiB. Repositories with at least 5,000 source files or 512 MiB show a directory selector before analysis. Files larger than 10 MiB are skipped by default and make coverage partial; use `--include-large-files` only when they must be inspected.
 
 New runs store canonical results in `runs/<run_id>/results.sqlite3`. The Web service keeps progress summaries only and queries findings in pages of 100, with a hard API maximum of 200. Parsing, rules, and AI run in a separate `logpilot.scan_runner` process. Completed chunks remain durable, so an interrupted run can continue without repeating them.
