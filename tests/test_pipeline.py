@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -10,7 +11,6 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -24,7 +24,6 @@ from logpilot.pipeline import run_scan
 from logpilot.runtime import RuntimeExecution, RuntimeInfo
 from logpilot.settings import save_repository_settings
 from logpilot.storage import DATA_DIR_ENV, load_last_repository, repository_data_dir
-import logpilot.web as web_module
 from logpilot.web import _html, build_server
 
 
@@ -226,7 +225,19 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual({log.language for log in report.logs}, {"java", "python"})
 
     def test_web_shell_contains_analysis_controls(self) -> None:
-        html = _html()
+        document = _html()
+        html = "\n".join(
+            [
+                document,
+                (ROOT / "ui" / "legacy-body.html").read_text(encoding="utf-8"),
+                (ROOT / "ui" / "src" / "styles.css").read_text(encoding="utf-8"),
+                (ROOT / "ui" / "src" / "legacy-controller.ts").read_text(encoding="utf-8"),
+            ]
+        )
+        self.assertIn('<div id="root"></div>', document)
+        self.assertIn('/assets/', document)
+        self.assertNotIn("<style>", document)
+        self.assertNotIn("<script>\n", document)
         self.assertIn("LogPilot 本地分析工作台", html)
         self.assertIn("repoPath", html)
         self.assertIn("browseButton", html)
@@ -326,8 +337,69 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('id="scanProgress"', html)
         self.assertIn('id="cancelScanButton"', html)
         self.assertIn("pollScanJob", html)
-        self.assertIn("/api/browse", html)
+        self.assertIn("浏览器调试模式请直接输入仓库路径", html)
+        self.assertNotIn("/api/browse", html)
 
+    def test_web_serves_compiled_frontend_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = build_server(Path(tmp), port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address
+                with urllib.request.urlopen(f"http://{host}:{port}/", timeout=10) as response:
+                    document = response.read().decode("utf-8")
+                asset = re.search(r'src="(?P<path>/assets/[^"]+\.js)"', document)
+                self.assertIsNotNone(asset)
+                with urllib.request.urlopen(f"http://{host}:{port}{asset.group('path')}", timeout=10) as response:
+                    javascript = response.read().decode("utf-8")
+                    content_type = response.headers.get_content_type()
+                self.assertIn(content_type, {"application/javascript", "text/javascript"})
+                self.assertIn("LogPilot", javascript)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_desktop_api_requires_token_and_can_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = build_server(Path(tmp), port=0, auth_token="test-token", allow_shutdown=True)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address
+            try:
+                with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=10) as response:
+                    health = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(health, {"status": "ok", "api_version": 1})
+
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(f"http://{host}:{port}/api/meta", timeout=10)
+                self.assertEqual(caught.exception.code, 401)
+                caught.exception.close()
+
+                authorized = urllib.request.Request(
+                    f"http://{host}:{port}/api/meta",
+                    headers={"X-LogPilot-Token": "test-token", "Origin": "http://tauri.localhost"},
+                )
+                with urllib.request.urlopen(authorized, timeout=10) as response:
+                    metadata = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.headers["Access-Control-Allow-Origin"], "http://tauri.localhost")
+                self.assertEqual(metadata["api_version"], 1)
+                self.assertTrue(metadata["shutdown_enabled"])
+
+                shutdown = urllib.request.Request(
+                    f"http://{host}:{port}/api/shutdown",
+                    data=b"",
+                    headers={"X-LogPilot-Token": "test-token"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(shutdown, timeout=10) as response:
+                    self.assertEqual(json.loads(response.read().decode("utf-8"))["status"], "stopping")
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+            finally:
+                if thread.is_alive():
+                    server.shutdown()
+                server.server_close()
     def test_web_scan_endpoint_runs_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -582,75 +654,6 @@ class PipelineTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
-
-    def test_web_browse_endpoint_returns_selected_path(self) -> None:
-        with tempfile.TemporaryDirectory() as first_tmp, tempfile.TemporaryDirectory() as current_tmp:
-            repo = Path(first_tmp)
-            current = Path(current_tmp)
-            opened_from: list[Path] = []
-            original_choose_directory = web_module.choose_directory
-            web_module.choose_directory = lambda initial_dir: opened_from.append(initial_dir) or current
-            server = build_server(repo, port=0)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            try:
-                host, port = server.server_address
-                request = urllib.request.Request(
-                    f"http://{host}:{port}/api/browse",
-                    data=json.dumps({"path": str(current)}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(request, timeout=10) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(response.status, 200)
-                self.assertFalse(payload["cancelled"])
-                self.assertEqual(payload["path"], str(current))
-                self.assertEqual(opened_from, [current.resolve()])
-                self.assertEqual(load_last_repository(repo), current.resolve())
-
-                with urllib.request.urlopen(f"http://{host}:{port}/api/state", timeout=10) as response:
-                    state = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(state["repository"], str(current.resolve()))
-            finally:
-                web_module.choose_directory = original_choose_directory
-                server.shutdown()
-                server.server_close()
-
-    def test_directory_picker_uses_visible_foreground_owner(self) -> None:
-        with tempfile.TemporaryDirectory() as initial_tmp, tempfile.TemporaryDirectory() as selected_tmp:
-            initial = Path(initial_tmp).resolve()
-            selected = Path(selected_tmp).resolve()
-            completed = mock.Mock(returncode=0, stdout=f"{selected}\n", stderr="")
-
-            with mock.patch.object(web_module.subprocess, "run", return_value=completed) as run:
-                result = web_module._choose_directory_tk_subprocess(initial, timeout_seconds=17)
-
-            self.assertEqual(result, selected)
-            command = run.call_args.args[0]
-            script = command[2]
-            self.assertEqual(command[:2], [sys.executable, "-c"])
-            self.assertEqual(command[3], str(initial))
-            self.assertIn('if sys.platform == "win32":', script)
-            self.assertIn("else:\n        root.withdraw()", script)
-            self.assertIn('root.attributes("-topmost", True)', script)
-            self.assertIn("root.focus_force()", script)
-            self.assertIn("user32.SetForegroundWindow(owner)", script)
-            self.assertIn("user32.EnumWindows(callback, 0)", script)
-            self.assertIn("threading.Thread(target=focus_picker_window, daemon=True).start()", script)
-            self.assertIn("parent=root", script)
-            self.assertEqual(run.call_args.kwargs["timeout"], 17)
-            self.assertEqual(
-                run.call_args.kwargs["creationflags"],
-                getattr(web_module.subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
-            )
-
-    def test_directory_picker_timeout_returns_actionable_error(self) -> None:
-        with tempfile.TemporaryDirectory() as initial_tmp:
-            timeout = web_module.subprocess.TimeoutExpired([sys.executable], 1)
-            with mock.patch.object(web_module.subprocess, "run", side_effect=timeout):
-                with self.assertRaisesRegex(RuntimeError, "选择窗口超时"):
-                    web_module._choose_directory_tk_subprocess(Path(initial_tmp), timeout_seconds=1)
 
     def test_web_repository_switch_is_remembered_across_server_restart(self) -> None:
         with tempfile.TemporaryDirectory() as first_tmp, tempfile.TemporaryDirectory() as second_tmp:

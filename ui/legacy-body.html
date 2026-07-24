@@ -1,0 +1,207 @@
+<div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">LP</span><strong>LogPilot</strong></div>
+      <nav class="side-nav" aria-label="主要导航">
+        <button class="nav-item active" id="currentTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span><span>仓库分析</span></button>
+        <button class="nav-item" id="historyTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span><span>历史记录</span></button>
+        <button class="nav-item" id="settingsTab" type="button"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span><span>设置</span></button>
+      </nav>
+      <div class="sidebar-footer"><span class="local-dot"></span><span>本地模式</span></div>
+    </aside>
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <main>
+      <div class="view-panel" id="currentPanel">
+        <section class="analysis-launch" aria-label="分析配置">
+          <div class="analysis-commandbar">
+            <div class="repo-control">
+              <input id="repoPath" type="text" spellcheck="false" aria-label="仓库路径" placeholder="D:\\GitHub\\log-pilot">
+              <button class="secondary" id="browseButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><span>选择仓库</span></button>
+            </div>
+            <label class="runtime-control" title="选择执行日志分析的本机运行时">
+              <span class="state-dot offline" id="runtimeDot"></span>
+              <select id="runtimeSelect" aria-label="分析运行时"><option value="">检测运行时...</option></select>
+            </label>
+            <button id="scanButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 3 14 9-14 9z"/></svg><span>开始分析</span></button>
+          </div>
+          <div class="analysis-options">
+            <div class="analysis-option">
+              <span class="analysis-option-label">语言识别</span>
+              <span class="automatic-mode">自动识别</span>
+              <span class="analysis-option-summary" id="analysisLanguageSummary"></span>
+              <select class="hidden" id="analysisLanguagePreset" aria-hidden="true"><option value="auto">自动识别</option></select><button class="hidden" id="addLanguagePreset" type="button" aria-hidden="true"></button>
+            </div>
+            <div class="analysis-option">
+              <span class="analysis-option-label">日志模板</span>
+              <div class="preset-control"><select id="analysisTemplatePreset" aria-label="日志模板方案"></select><button class="secondary preset-add" id="addTemplatePreset" type="button" title="新增模板方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button></div>
+              <span class="analysis-option-summary" id="analysisTemplateSummary"></span>
+            </div>
+            <div class="analysis-option">
+              <span class="analysis-option-label">AI 深度</span>
+              <select id="analysisDepth" aria-label="AI 分析深度">
+                <option value="quick">快速</option>
+                <option value="standard">标准</option>
+                <option value="deep">深度</option>
+              </select>
+              <span class="analysis-option-summary" id="analysisDepthSummary"></span>
+            </div>
+          </div>
+        </section>
+        <section class="scan-progress hidden" id="scanProgress" aria-live="polite">
+          <div class="scan-progress-header">
+            <div class="scan-progress-copy">
+              <div class="scan-progress-title"><strong id="scanProgressTitle">正在准备分析</strong><span id="scanProgressPercent">0%</span></div>
+              <div class="scan-progress-message" id="scanProgressMessage">正在创建后台分析任务</div>
+            </div>
+            <button class="secondary compact-action" id="cancelScanButton" type="button">停止分析</button>
+          </div>
+          <div class="scan-progress-track indeterminate" id="scanProgressTrack"><i></i></div>
+          <div class="scan-steps" id="scanSteps">
+            <span class="scan-step" data-scan-step="discovering">发现文件</span>
+            <span class="scan-step" data-scan-step="parsing">解析源码</span>
+            <span class="scan-step" data-scan-step="rules">规则检查</span>
+            <span class="scan-step" data-scan-step="runtime">运行时分析</span>
+            <span class="scan-step" data-scan-step="reporting">生成报告</span>
+          </div>
+          <div class="module-progress-list hidden" id="scanModules"></div>
+        </section>
+        <div class="incremental-note hidden" id="incrementalNote">分析仍在进行，当前展示已完成阶段的结果；完成后才可采纳修改。</div>
+        <div class="snapshot-banner hidden" id="snapshotBanner">
+          <div class="snapshot-copy"><span class="state-dot warning-dot"></span><span>源码已修改，当前结果为分析快照</span></div>
+          <div class="snapshot-actions"><button class="secondary" id="rollbackButton" type="button">撤销上次采纳</button><button class="secondary" id="rescanButton" type="button">重新分析</button></div>
+        </div>
+        <div class="coverage-banner hidden" id="coverageBanner"></div>
+        <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
+        <section class="workspace-section">
+          <div class="results-toolbar">
+            <select class="module-filter" id="resultModule" aria-label="目录模块"><option value="">全部目录</option></select>
+            <label class="result-search"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="resultSearch" type="search" aria-label="搜索分析结果" placeholder="搜索文件、问题或规则"></label>
+            <div class="filter-controls">
+              <div class="filter-group"><span class="filter-label">风险</span><div class="severity-filters" id="severityFilters" role="group" aria-label="风险级别筛选">
+                <button class="severity-filter active" type="button" data-severity="all">全部</button>
+                <button class="severity-filter" type="button" data-severity="high">高</button>
+                <button class="severity-filter" type="button" data-severity="medium">中</button>
+                <button class="severity-filter" type="button" data-severity="low">低</button>
+              </div></div>
+              <div class="filter-group"><span class="filter-label">动作</span><div class="action-filters" id="actionFilters" role="group" aria-label="建议动作筛选">
+                <button class="action-filter active" type="button" data-action="all">全部<span class="filter-count" data-action-count="all">0</span></button>
+                <button class="action-filter" type="button" data-action="add">增加<span class="filter-count" data-action-count="add">0</span></button>
+                <button class="action-filter" type="button" data-action="delete">删除<span class="filter-count" data-action-count="delete">0</span></button>
+                <button class="action-filter" type="button" data-action="modify">修改<span class="filter-count" data-action-count="modify">0</span></button>
+              </div></div>
+            </div>
+            <div class="toolbar-actions">
+              <button class="secondary compact-action" id="expandAllButton" type="button" title="展开当前筛选结果" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 5 5 5-5"/><path d="m7 13 5 5 5-5"/></svg><span>全部展开</span></button>
+              <button class="secondary compact-action" id="collapseAllButton" type="button" title="折叠当前筛选结果" disabled><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 5-5 5 5"/><path d="m7 11 5-5 5 5"/></svg><span>全部折叠</span></button>
+              <button class="secondary compact-action" id="fullPatchButton" type="button" title="查看本次分析生成的全部安全修改"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg><span>完整修改</span></button>
+            </div>
+          </div>
+          <div class="results-meta"><span id="resultsSummary">等待分析结果</span><div class="results-pager"><button class="secondary icon-only" id="previousIssues" type="button" title="上一页" disabled><svg class="icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button><span id="issuePageLabel">第 1 页</span><button class="secondary icon-only" id="nextIssues" type="button" title="下一页" disabled><svg class="icon" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button></div></div>
+          <div class="result-stream" id="resultStream"></div>
+          <span class="hidden">按文件分组</span>
+        </section>
+      </div>
+      <section id="historyPanel" class="view-panel hidden">
+        <div class="section-bar"><div class="section-title"><h2>分析历史</h2><span class="section-count">按时间倒序排列</span></div></div>
+        <div class="history-table">
+          <div class="history-header"><span>仓库与时间</span><span>评分</span><span>扫描结果</span><span>操作</span></div>
+          <div class="history-list" id="historyList"></div>
+        </div>
+      </section>
+      <section id="settingsPanel" class="view-panel hidden">
+        <div class="section-bar"><div class="section-title"><h2>仓库设置</h2><span class="section-count" id="settingsRepository">仓库配置</span></div><button id="saveSettingsButton" type="button">保存设置</button></div>
+        <div class="settings-stack">
+          <section class="settings-surface">
+            <header class="settings-surface-header">
+              <div><h2>语言识别</h2><p>根据仓库源码自动识别并展示分析覆盖</p></div>
+              <span class="automatic-mode">自动识别</span>
+            </header>
+            <div class="language-options" id="languageOptions"></div>
+            <div class="hidden" id="languageMode" aria-hidden="true"><button type="button" data-language-mode="auto"></button></div>
+            <select class="hidden" id="settingsLanguagePreset" aria-hidden="true"></select><button class="hidden" id="loadLanguagePreset" type="button"></button><button class="hidden" id="saveLanguagePreset" type="button"></button><button class="hidden" id="deleteLanguagePreset" type="button"></button>
+          </section>
+          <section class="settings-surface">
+            <header class="settings-surface-header">
+              <div><h2>日志模板</h2><p>异常日志优先沿用仓库中的实现风格</p></div>
+              <button class="secondary" id="profileRepositoryButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 4-7"/></svg><span>扫描并推荐</span></button>
+            </header>
+            <div class="preset-library"><span class="preset-library-label">模板方案</span><select id="settingsTemplatePreset" aria-label="已保存的模板方案"></select><button class="secondary" id="loadTemplatePreset" type="button">载入</button><button class="secondary" id="saveTemplatePreset" type="button">保存当前</button><button class="secondary icon-only" id="deleteTemplatePreset" type="button" title="删除模板方案"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg></button></div>
+            <div class="template-layout">
+              <nav class="template-nav" id="templateLanguageNav" aria-label="模板语言"></nav>
+              <div class="template-editor">
+                <div class="template-editor-meta"><span class="template-source" id="templateSource">内置模板</span><span class="template-support" id="templateSupport"></span></div>
+                <textarea class="template-input" id="templateInput" spellcheck="false" aria-label="日志模板"></textarea>
+                <div class="template-footer">
+                  <span class="template-vars">{event} {exception} {function} {logger} {indent}</span>
+                  <div class="settings-actions"><button class="secondary" id="useRecommendedTemplate" type="button">采用推荐</button><button class="secondary" id="useBuiltinTemplate" type="button">使用内置</button></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="section-bar runtime-settings"><div class="section-title"><h2>运行时</h2><span class="section-count">本机分析执行环境</span></div></div>
+        <div class="runtime-overview">
+          <div class="runtime-machine">
+            <span class="machine-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg></span>
+            <div><h2>本机运行环境</h2><p id="runtimeSummary">正在检测可用的命令行运行时</p></div>
+          </div>
+          <button class="secondary" id="refreshRuntimesButton" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span>刷新状态</span></button>
+        </div>
+        <div class="runtime-table">
+          <div class="runtime-header"><span>运行时</span><span>健康状态</span><span>版本</span><span>可执行文件</span></div>
+          <div id="runtimeList"></div>
+        </div>
+        <section class="diagnostics-section">
+          <div class="diagnostics-header">
+            <div class="diagnostics-copy"><h2>分析诊断</h2><p id="diagnosticsSummary">用于排查运行时分析异常</p></div>
+            <button class="secondary" id="diagnosticsToggle" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>查看诊断</span></button>
+          </div>
+          <pre class="diagnostics-output hidden" id="diagnosticsPre"></pre>
+        </section>
+      </section>
+    </main>
+  </div>
+  <div class="batch-bar hidden" id="batchBar" role="region" aria-label="批量采纳操作">
+    <div class="batch-copy"><strong id="batchSelectionCount">已选择 0 项</strong><span id="batchSelectionFiles"></span></div>
+    <div class="batch-actions"><button class="secondary" id="clearSelectionButton" type="button">清空</button><button id="batchApplyButton" type="button">批量采纳</button></div>
+  </div>
+  <div class="dialog-backdrop hidden" id="planDialog" role="dialog" aria-modal="true" aria-labelledby="planDialogTitle">
+    <section class="dialog plan-dialog">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="planDialogTitle">选择分析目录</h2><p>大型仓库按目录串行处理，完成的目录会立即提供结果</p></div>
+        <button class="secondary icon-only" id="closePlanDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="plan-summary" id="planSummary"></div>
+      <div class="plan-tools"><div><button class="secondary compact-action" id="selectAllModules" type="button">全选</button><button class="secondary compact-action" id="selectRecommendedModules" type="button">恢复推荐</button></div><span class="section-count" id="planSelectionSummary"></span></div>
+      <div class="plan-modules" id="planModules"></div>
+      <div class="dialog-actions"><button class="secondary" id="cancelPlanButton" type="button">取消</button><button id="confirmPlanButton" type="button">分析选定目录</button></div>
+    </section>
+  </div>
+  <div class="dialog-backdrop hidden" id="fullPatchDialog" role="dialog" aria-modal="true" aria-labelledby="fullPatchTitle">
+    <section class="dialog">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="fullPatchTitle">完整修改</h2><p>本次分析生成的安全修改，可在结果流中勾选后采纳</p></div>
+        <button class="secondary icon-only" id="closePatchDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="diff-view" id="fullPatchPre"><span class="diff-line note">暂无修改内容</span></div>
+    </section>
+  </div>
+  <div class="dialog-backdrop hidden" id="applyDialog" role="dialog" aria-modal="true" aria-labelledby="applyDialogTitle">
+    <section class="dialog compact">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="applyDialogTitle">确认采纳修改</h2><p>写入前会检查源码是否仍与分析快照一致</p></div>
+        <button class="secondary icon-only" id="closeApplyDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="confirm-body" id="applySummary"></div>
+      <div class="dialog-actions"><button class="secondary" id="cancelApplyButton" type="button">取消</button><button id="confirmApplyButton" type="button">确认采纳</button></div>
+    </section>
+  </div>
+  <div class="dialog-backdrop hidden" id="presetDialog" role="dialog" aria-modal="true" aria-labelledby="presetDialogTitle">
+    <section class="dialog compact">
+      <header class="dialog-header">
+        <div class="dialog-title"><h2 id="presetDialogTitle">新增方案</h2><p id="presetDialogDescription">保存当前配置，分析前可直接选择</p></div>
+        <button class="secondary icon-only" id="closePresetDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </header>
+      <div class="preset-dialog-body"><label for="presetNameInput">方案名称</label><input id="presetNameInput" type="text" maxlength="40" autocomplete="off" placeholder="例如：Python 后端"></div>
+      <div class="dialog-actions"><button class="secondary" id="cancelPresetButton" type="button">取消</button><button id="confirmPresetButton" type="button">保存方案</button></div>
+    </section>
+  </div>

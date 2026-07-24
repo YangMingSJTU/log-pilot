@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68,<82"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -19,10 +19,15 @@ dependencies = [
 [project.optional-dependencies]
 ai = []
 dev = []
+desktop = ["pyinstaller>=6.16,<7", "setuptools>=68,<82"]
 web = []
 
 [project.scripts]
 logpilot = "logpilot.cli:main"
+logpilot-engine = "logpilot.desktop_engine:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+logpilot = ["web_assets/**/*"]

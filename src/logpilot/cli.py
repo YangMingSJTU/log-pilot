@@ -19,7 +19,6 @@ from .remediation import (
 )
 from .runtime import RuntimeRegistry
 from .storage import repository_data_dir
-from .settings import load_repository_settings, selected_extensions
 from .web import serve
 
 
@@ -69,9 +68,6 @@ def _scan(args) -> None:
     repo_root = Path(args.path).expanduser().resolve()
     config_path = Path(args.config) if args.config else None
     config = load_config(repo_root, config_path)
-    extensions = selected_extensions(load_repository_settings(repo_root))
-    if extensions is not None:
-        config.scan.include_extensions = extensions
     plan = build_scan_plan(repo_root, config.scan, include_large_files=args.include_large_files)
     save_scan_plan(plan)
     try:

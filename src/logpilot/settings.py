@@ -15,10 +15,6 @@ from .storage import initialize_repository_storage, repository_data_dir
 
 
 LANGUAGE_LABELS = {spec.id: spec.label for spec in LANGUAGE_SPECS}
-LANGUAGE_EXTENSIONS = {
-    language: sorted(suffix for suffix, mapped in LANGUAGE_BY_SUFFIX.items() if mapped == language)
-    for language in LANGUAGE_LABELS
-}
 BUILTIN_TEMPLATES = {
     "python": '{logger}.exception("{event}")',
     "c": 'fprintf(stderr, "{event}: %s\\n", {exception})',
@@ -227,18 +223,6 @@ def validate_template(template: str) -> str:
     if "event" not in placeholders:
         raise SettingsError("日志模板必须包含 {event}。")
     return cleaned
-
-
-def selected_extensions(settings: RepositorySettings) -> list[str] | None:
-    if settings.language_mode != "custom":
-        return None
-    return sorted(
-        {
-            extension
-            for language in settings.selected_languages
-            for extension in LANGUAGE_EXTENSIONS[language]
-        }
-    )
 
 
 def build_language_profile(

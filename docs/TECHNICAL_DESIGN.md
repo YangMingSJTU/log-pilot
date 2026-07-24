@@ -2,20 +2,19 @@
 
 ## 架构摘要
 
-LogPilot MVP 采用 Python CLI 核心加本地 Web 分析工作台。CLI 负责扫描仓库、识别日志、执行规则分析、调用本机运行时、生成报告和 Patch；Web 工作台支持选择仓库与 Codex/Claude 运行时，并展示当前与历史结果。
+LogPilot 采用“桌面客户端 + 本地 Python Engine + 隔离扫描进程”的分层架构。Tauri 客户端负责窗口、原生目录选择和 Engine 生命周期；React/TypeScript 负责交互；Python 负责扫描、规则、AI、存储和采纳。CLI 与桌面端共用同一核心能力。
 
 ```mermaid
 flowchart LR
-  A["仓库预检"] --> B["逻辑模块"]
-  B --> C["执行分片"]
+  A["Tauri 桌面客户端"] -->|"随机端口 + 启动令牌"| B["Python Engine"]
+  B --> C["仓库预检与任务调度"]
   C --> D["独立扫描进程"]
-  D --> E["解析 / 规则 / AI"]
-  E --> F["SQLite 结果库"]
-  F --> G["分页 API"]
-  G --> H["目录结果与采纳"]
+  D --> E["分片解析 / 规则 / AI"]
+  E --> F["用户目录 SQLite"]
+  F -->|"分页 API"| A
 ```
 
-图示说明：用户选择工程目录形成的逻辑模块，调度器再将模块拆成有界执行分片。Web 服务只调度和分页查询；解析、规则与 AI 在独立扫描进程中串行执行。每个完整分片独立提交，页面和历史记录不会持有全量结果。
+图示说明：桌面壳只管理本机能力与进程，不承载扫描逻辑。Engine 仅监听回环地址，并要求每次启动生成的随机令牌。扫描继续在独立进程串行执行；每个完整分片独立提交，客户端按页读取结果。
 
 ## 模块划分
 
@@ -34,10 +33,16 @@ flowchart LR
 - `fixes` 将规则问题转换为统一的删除、替换或插入修复；Python 异常日志会在 AST 语法校验通过后才成为可采纳项。
 - `history` 将每次扫描保存到 `repositories/<repository_id>/runs/<run_id>/`；新运行以 `results.sqlite3` 为查询源，旧 JSON 历史保持只读。
 - `patching` 根据统一修复模型生成可审查 Diff，`remediation` 负责精确校验、跨文件原子采纳、备份和回滚。
-- `web` 提供目录与运行时选择、一键扫描和历史记录，并以按文件分组的纵向结果流就地展示原因、源码与 Diff，支持单项或文件级批量采纳及回滚。
+- `web` 只提供带版本的本地 API、鉴权、任务调度和编译后静态资源，不包含页面模板或系统目录选择器。
+- `ui` 是 Vite、React 和 TypeScript 客户端，负责纵向结果流、历史、设置和采纳交互；现有兼容控制器按功能逐步迁移为 React 组件。
+- `ui/src-tauri` 提供单实例桌面壳、系统目录选择器、随机端口和令牌、Python Engine sidecar 启停及安装包。
+- `desktop_engine` 是桌面专用 Engine 入口，仅允许回环地址，支持鉴权健康检查和受控关闭。
 
 ## 运行时安全边界
 
+- 桌面 Engine 绑定随机回环端口，除健康检查外的 API 均校验每次启动生成的令牌。
+- 窗口退出时先请求 Engine 正常关闭，超时后终止整个 sidecar 进程树，避免后台残留。
+- 系统目录选择只在 Tauri 主窗口中执行；浏览器调试模式只能输入路径，不启动 Tk 子进程。
 - Codex 使用 `exec --ephemeral --sandbox read-only`，Claude 使用 `--tools "" --permission-mode plan`。
 - 所有命令使用参数数组直接启动，不经过 Shell 拼接；分析 Prompt 通过标准输入传递。
 - 单次扫描批量提交日志并设置超时，返回值必须符合预设 JSON Schema。

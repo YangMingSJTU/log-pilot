@@ -1,17 +1,13 @@
 # LogPilot
 
-LogPilot is a local log-quality scanner for source repositories. It inventories source-language coverage, identifies noisy logs, forbidden log APIs, missing exception logs, and possible sensitive data exposure, then writes review artifacts for humans to inspect.
+LogPilot is a local desktop log-quality scanner for source repositories. It inventories source-language coverage, identifies noisy logs, forbidden log APIs, missing exception logs, and possible sensitive data exposure, then presents reviewable and applicable changes without uploading the repository.
 
 ## Quick start
 
-```bash
-python -m pip install -e .
-logpilot ui
-```
-
-Open the printed local URL, use the repository picker or enter a path such as `D:\GitHub\log-pilot`, and click the analyze button. You can still run the CLI directly:
+Install and launch the packaged desktop application for the full workflow, including the native repository picker. The Python CLI remains available for automation:
 
 ```bash
+python -m pip install .
 logpilot runtimes
 logpilot scan . --runtime codex
 logpilot scan . --module src
@@ -47,11 +43,30 @@ Every apply validates the saved source context, stores a backup under `applies/<
 ## Development
 
 ```bash
-python -m pip install -e .
+python -m pip install -e ".[desktop]"
 python -m unittest discover -s tests
 python -m logpilot runtimes
 python -m logpilot scan . --runtime codex
-python -m logpilot ui
+cd ui
+npm install
+npm run check
+npm test
+npm run desktop:dev
 ```
 
-The local Web UI remembers the most recently selected repository in the user application data directory. Use `--path <repository>` only when you want to override that remembered path for startup. The folder picker opens from the path currently entered in the workbench. C and C++ parsing runs in a reusable isolated worker process, so a native parser crash is recorded against the current file without terminating the Web service. The Tree-sitter versions in `requirements.lock` are a tested compatibility set and must be upgraded together only after the real C/C++ regression scan passes.
+The production client is a Tauri application under `ui/src-tauri/`. It starts a private Python Engine sidecar on a random loopback port, authenticates every API request with a per-launch token, and stops the Engine when the window exits. The repository chooser is provided by the operating system and opens from the path currently entered in the workbench. A second launch focuses the existing window.
+
+Use `python -m logpilot ui` only for browser-based UI debugging. It remembers the most recently selected repository, but the browser mode intentionally has no native folder picker; enter a path directly or pass `--path <repository>`.
+
+Build a Windows installer with:
+
+```bash
+python scripts/build_desktop_engine.py
+cd ui
+npm run build
+npx tauri build --bundles nsis
+```
+
+The React/TypeScript client owns all presentation and desktop integration. `src/logpilot/web.py` is an API and static-asset server only; new UI markup or styling must not be embedded in Python. The extracted compatibility controller preserves the current workbench behavior while screens are migrated incrementally to React components.
+
+C and C++ parsing runs in a reusable isolated worker process, so a native parser crash is recorded against the current file without terminating the Engine. The Tree-sitter versions in `requirements.lock` are a tested compatibility set and must be upgraded together only after the real C/C++ regression scan passes.
