@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import uuid
 from collections import Counter
@@ -13,6 +14,7 @@ from typing import Iterable
 
 from .config import ScanConfig
 from .languages import language_for_path
+from .models import ExcludedMapping
 from .storage import initialize_repository_storage
 
 
@@ -75,6 +77,7 @@ class ScanPlan:
     advisory_files: list[PlannedFile]
     discovered_languages: dict[str, int]
     unrecognized_extensions: dict[str, int]
+    excluded_mappings: list[ExcludedMapping]
     modules: list[ScanModule]
 
     def to_dict(self) -> dict[str, object]:
@@ -88,7 +91,9 @@ def build_scan_plan(
     include_large_files: bool = False,
 ) -> ScanPlan:
     repo_root = repo_root.expanduser().resolve()
-    paths, discovery_method = discover_repository_files(repo_root, config.exclude)
+    paths, discovery_method, excluded_mappings = discover_repository_files(
+        repo_root, config.exclude
+    )
     selected_extensions = {item.lower() for item in config.include_extensions}
     planned: list[PlannedFile] = []
     skipped: list[PlannedFile] = []
@@ -161,6 +166,7 @@ def build_scan_plan(
         advisory_files=sorted(advisory_files, key=lambda item: item.path.casefold()),
         discovered_languages=dict(sorted(discovered_languages.items())),
         unrecognized_extensions=dict(sorted(unrecognized_extensions.items())),
+        excluded_mappings=excluded_mappings,
         modules=modules,
     )
 
@@ -208,24 +214,43 @@ def load_scan_plan(repo_root: Path, plan_id: str) -> ScanPlan:
         advisory_files=[PlannedFile(**item) for item in payload.get("advisory_files", [])],
         discovered_languages={str(key): int(value) for key, value in payload.get("discovered_languages", {}).items()},
         unrecognized_extensions={str(key): int(value) for key, value in payload.get("unrecognized_extensions", {}).items()},
+        excluded_mappings=[
+            ExcludedMapping(**item) for item in payload.get("excluded_mappings", [])
+        ],
         modules=modules,
     )
 
 
-def discover_repository_files(repo_root: Path, excludes: Iterable[str]) -> tuple[list[Path], str]:
-    git_paths = _git_files(repo_root)
-    if git_paths is not None:
-        return git_paths, "git"
+def discover_repository_files(
+    repo_root: Path, excludes: Iterable[str]
+) -> tuple[list[Path], str, list[ExcludedMapping]]:
     excluded = set(excludes)
+    excluded_mappings = _discover_directory_mappings(repo_root, excluded)
+    git_paths = _git_files(repo_root, excluded_mappings)
+    if git_paths is not None:
+        return git_paths, "git", excluded_mappings
     paths: list[Path] = []
+    mapping_paths = {item.path for item in excluded_mappings}
     for current_root, directories, filenames in os.walk(repo_root):
         current = Path(current_root)
-        directories[:] = sorted(item for item in directories if item not in excluded)
+        kept_directories: list[str] = []
+        for item in sorted(directories):
+            candidate = current / item
+            relative = candidate.relative_to(repo_root).as_posix()
+            if item in excluded or relative in mapping_paths:
+                continue
+            mapping = _directory_mapping(candidate, repo_root)
+            if mapping is not None:
+                excluded_mappings.append(mapping)
+                mapping_paths.add(mapping.path)
+                continue
+            kept_directories.append(item)
+        directories[:] = kept_directories
         for filename in sorted(filenames):
             path = current / filename
             if not excluded.intersection(path.relative_to(repo_root).parts):
                 paths.append(path)
-    return paths, "walk"
+    return paths, "walk", sorted(excluded_mappings, key=lambda item: item.path.casefold())
 
 
 def selected_modules(plan: ScanPlan, module_ids: Iterable[str] | None) -> list[ScanModule]:
@@ -255,7 +280,9 @@ def resolve_module_selectors(plan: ScanPlan, selectors: Iterable[str]) -> list[s
     return resolved
 
 
-def _git_files(repo_root: Path) -> list[Path] | None:
+def _git_files(
+    repo_root: Path, excluded_mappings: Iterable[ExcludedMapping] = ()
+) -> list[Path] | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_root), "ls-files", "-co", "--exclude-standard", "-z"],
@@ -270,10 +297,14 @@ def _git_files(repo_root: Path) -> list[Path] | None:
     if result.returncode != 0:
         return None
     paths: list[Path] = []
+    mapping_parts = [Path(item.path).parts for item in excluded_mappings]
     for raw in result.stdout.split(b"\0"):
         if not raw:
             continue
         relative = raw.decode("utf-8", errors="surrogateescape")
+        relative_path = Path(relative)
+        if any(relative_path.parts[: len(parts)] == parts for parts in mapping_parts):
+            continue
         candidate = repo_root / relative
         if candidate.is_dir():
             return None
@@ -282,6 +313,48 @@ def _git_files(repo_root: Path) -> list[Path] | None:
     if not paths:
         return None
     return sorted(paths, key=lambda path: path.relative_to(repo_root).as_posix().casefold())
+
+
+def _discover_directory_mappings(
+    repo_root: Path, excluded: set[str]
+) -> list[ExcludedMapping]:
+    mappings: list[ExcludedMapping] = []
+    for current_root, directories, _filenames in os.walk(repo_root):
+        current = Path(current_root)
+        kept_directories: list[str] = []
+        for item in sorted(directories):
+            candidate = current / item
+            mapping = _directory_mapping(candidate, repo_root)
+            if mapping is not None:
+                mappings.append(mapping)
+                continue
+            if item in excluded:
+                continue
+            kept_directories.append(item)
+        directories[:] = kept_directories
+    return sorted(mappings, key=lambda item: item.path.casefold())
+
+
+def _directory_mapping(path: Path, repo_root: Path) -> ExcludedMapping | None:
+    try:
+        if path.is_symlink():
+            reason = "symlink"
+        elif hasattr(os.path, "isjunction") and os.path.isjunction(path):
+            reason = "junction"
+        else:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+            reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            if not reparse_attribute or not attributes & reparse_attribute:
+                return None
+            reason = "reparse_point"
+        target = str(Path(os.path.realpath(path)))
+        return ExcludedMapping(
+            path=path.relative_to(repo_root).as_posix(),
+            target=target,
+            reason=reason,
+        )
+    except OSError:
+        return None
 
 
 def _project_roots(paths: list[Path], repo_root: Path) -> set[str]:

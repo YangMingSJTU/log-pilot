@@ -69,6 +69,7 @@
           <div class="snapshot-copy"><span class="state-dot warning-dot"></span><span>源码已修改，当前结果为分析快照</span></div>
           <div class="snapshot-actions"><button class="secondary" id="rollbackButton" type="button">撤销上次采纳</button><button class="secondary" id="rescanButton" type="button">重新分析</button></div>
         </div>
+        <div class="mapping-banner hidden" id="mappingBanner"></div>
         <div class="coverage-banner hidden" id="coverageBanner"></div>
         <section class="summary-section"><div class="summary-grid" id="metrics"></div></section>
         <section class="workspace-section">
@@ -167,10 +168,11 @@
   <div class="dialog-backdrop hidden" id="planDialog" role="dialog" aria-modal="true" aria-labelledby="planDialogTitle">
     <section class="dialog plan-dialog">
       <header class="dialog-header">
-        <div class="dialog-title"><h2 id="planDialogTitle">选择分析目录</h2><p>大型仓库按目录串行处理，完成的目录会立即提供结果</p></div>
+        <div class="dialog-title"><h2 id="planDialogTitle">选择分析目录</h2><p>确认本次分析范围，目录完成后可立即查看结果</p></div>
         <button class="secondary icon-only" id="closePlanDialog" type="button" title="关闭"><svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </header>
       <div class="plan-summary" id="planSummary"></div>
+      <div class="plan-exclusions hidden" id="planExclusions"></div>
       <div class="plan-tools"><div><button class="secondary compact-action" id="selectAllModules" type="button">全选</button><button class="secondary compact-action" id="selectRecommendedModules" type="button">恢复推荐</button></div><span class="section-count" id="planSelectionSummary"></span></div>
       <div class="plan-modules" id="planModules"></div>
       <div class="dialog-actions"><button class="secondary" id="cancelPlanButton" type="button">取消</button><button id="confirmPlanButton" type="button">分析选定目录</button></div>

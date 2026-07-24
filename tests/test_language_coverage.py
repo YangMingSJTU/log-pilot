@@ -205,7 +205,7 @@ class LanguageCoverageTests(unittest.TestCase):
             fallback = save_repository_settings(repo, {"analysis_depth": "unexpected"})
             self.assertEqual(fallback.analysis_depth, "standard")
 
-    def test_unsupported_primary_language_never_reports_healthy_score(self) -> None:
+    def test_unsupported_files_are_reported_without_reducing_analyzable_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / "main.rs").write_text('fn main() { println!("hello"); }\n', encoding="utf-8")
@@ -213,11 +213,12 @@ class LanguageCoverageTests(unittest.TestCase):
 
             report = run_scan(repo)
 
-            self.assertEqual(report.summary.discovered_files, 2)
+            self.assertEqual(report.summary.discovered_files, 1)
             self.assertEqual(report.summary.files_scanned, 1)
-            self.assertEqual(report.summary.coverage_status, "partial")
-            self.assertEqual(report.summary.score_status, "insufficient_coverage")
-            self.assertIsNone(report.summary.score)
+            self.assertEqual(report.summary.coverage_status, "complete")
+            self.assertEqual(report.summary.coverage_ratio, 1.0)
+            self.assertEqual(report.summary.score_status, "local_only")
+            self.assertIsNotNone(report.summary.score)
             self.assertEqual(report.summary.unsupported_files, 1)
 
     def test_zero_log_repository_is_not_scored(self) -> None:
@@ -263,7 +264,7 @@ class LanguageCoverageTests(unittest.TestCase):
 
             report = run_scan(repo)
 
-            self.assertEqual(report.summary.discovered_files, 1)
+            self.assertEqual(report.summary.discovered_files, 0)
             self.assertEqual(report.summary.unrecognized_files, 1)
             self.assertEqual(report.summary.unrecognized_extensions, {".zigx": 1})
             self.assertEqual(report.summary.coverage_status, "unsupported")

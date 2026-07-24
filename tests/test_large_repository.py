@@ -21,6 +21,7 @@ if str(SRC) not in sys.path:
 
 from logpilot import planning
 from logpilot.config import ScanConfig, load_config
+from logpilot.history import list_history_runs, load_history_run
 from logpilot.models import Issue, LogCall, Severity
 from logpilot.pipeline import run_scan
 from logpilot.planning import build_scan_plan, save_scan_plan
@@ -131,6 +132,101 @@ class LargeRepositoryTests(unittest.TestCase):
                 [item.path for module in plan.modules for chunk in module.chunks for item in chunk.files],
                 ["src/main.cpp"],
             )
+
+    def test_directory_symlink_is_excluded_from_plan_coverage_and_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            external = root / "external"
+            repo.mkdir()
+            external.mkdir()
+            (repo / "main.py").write_text("print('local')\n", encoding="utf-8")
+            (external / "outside.py").write_text("print('outside')\n", encoding="utf-8")
+            mapping = repo / "linked-source"
+            try:
+                mapping.symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"Directory symlinks are unavailable: {exc}")
+
+            try:
+                plan = build_scan_plan(repo, ScanConfig())
+                report = run_scan(repo, plan=plan)
+                history = list_history_runs(repository_data_dir(repo))
+                restored = load_history_run(repository_data_dir(repo), history[0]["run_id"])
+                current_report = json.loads(
+                    (repository_data_dir(repo) / "report.json").read_text(encoding="utf-8")
+                )
+            finally:
+                mapping.unlink(missing_ok=True)
+
+            self.assertEqual(plan.source_files, 1)
+            self.assertEqual(plan.selected_files, 1)
+            self.assertEqual(len(plan.excluded_mappings), 1)
+            self.assertEqual(plan.excluded_mappings[0].path, "linked-source")
+            self.assertEqual(plan.excluded_mappings[0].target, str(external.resolve()))
+            self.assertEqual(plan.excluded_mappings[0].reason, "symlink")
+            self.assertEqual(report.summary.files_scanned, 1)
+            self.assertEqual(report.summary.discovered_files, 1)
+            self.assertEqual(report.summary.coverage_ratio, 1.0)
+            self.assertEqual(report.summary.coverage_status, "complete")
+            self.assertEqual(report.summary.failed_files, 0)
+            self.assertEqual(report.summary.excluded_mapping_count, 1)
+            self.assertEqual([item.path for item in report.excluded_mappings], ["linked-source"])
+            self.assertEqual(restored["report"]["excluded_mappings"][0]["reason"], "symlink")
+            self.assertEqual(restored["metadata"]["excluded_mapping_count"], 1)
+            self.assertEqual(current_report["excluded_mappings"][0]["path"], "linked-source")
+
+    @unittest.skipUnless(os.name == "nt", "Windows Junctions are only available on Windows")
+    def test_windows_junction_is_excluded_without_accessing_target_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            external = root / "external"
+            repo.mkdir()
+            external.mkdir()
+            (repo / "main.cpp").write_text("qDebug() << 1;\n", encoding="utf-8")
+            (external / "outside.cpp").write_text("qWarning() << 2;\n", encoding="utf-8")
+            mapping = repo / "DTIMChat"
+            created = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(mapping), str(external)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if created.returncode != 0:
+                self.skipTest(f"Junction creation failed: {created.stderr or created.stdout}")
+
+            try:
+                plan = build_scan_plan(repo, ScanConfig())
+                report = run_scan(repo, plan=plan)
+                history = list_history_runs(repository_data_dir(repo))
+                restored = load_history_run(repository_data_dir(repo), history[0]["run_id"])
+                current_report = json.loads(
+                    (repository_data_dir(repo) / "report.json").read_text(encoding="utf-8")
+                )
+            finally:
+                os.rmdir(mapping)
+
+            planned_paths = [
+                item.path
+                for module in plan.modules
+                for chunk in module.chunks
+                for item in chunk.files
+            ]
+            self.assertEqual(planned_paths, ["main.cpp"])
+            self.assertEqual(plan.source_files, 1)
+            self.assertEqual(len(plan.excluded_mappings), 1)
+            self.assertEqual(plan.excluded_mappings[0].path, "DTIMChat")
+            self.assertEqual(plan.excluded_mappings[0].target, str(external.resolve()))
+            self.assertEqual(plan.excluded_mappings[0].reason, "junction")
+            self.assertEqual(report.summary.files_scanned, 1)
+            self.assertEqual(report.summary.discovered_files, 1)
+            self.assertEqual(report.summary.coverage_status, "complete")
+            self.assertEqual(report.summary.failed_files, 0)
+            self.assertEqual(report.summary.excluded_mapping_count, 1)
+            self.assertEqual(report.summary.log_count, 1)
+            self.assertEqual(restored["report"]["excluded_mappings"][0]["reason"], "junction")
+            self.assertEqual(current_report["excluded_mappings"][0]["path"], "DTIMChat")
 
     def test_truly_empty_directory_remains_empty_after_git_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

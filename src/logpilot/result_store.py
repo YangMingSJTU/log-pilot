@@ -9,7 +9,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from .models import AiTrace, AnalysisTarget, Issue, LogCall, ParseFailure, ScanReport
+from .models import (
+    AiTrace,
+    AnalysisTarget,
+    ExcludedMapping,
+    Issue,
+    LogCall,
+    ParseFailure,
+    ScanReport,
+)
 from .planning import ScanPlan, ScanModule
 
 
@@ -106,6 +114,17 @@ class RunResultStore:
                     """,
                     (self.run_id, item.path, item.language, item.size),
                 )
+            connection.execute(
+                "INSERT OR REPLACE INTO run_data(run_id,key,payload_json) VALUES(?,?,?)",
+                (
+                    self.run_id,
+                    "excluded_mappings",
+                    json.dumps(
+                        [asdict(item) for item in plan.excluded_mappings],
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
 
     @property
     def run_id(self) -> str:
@@ -318,6 +337,7 @@ class RunResultStore:
         payload["parse_failures"] = [json.loads(row[0]) for row in rows]
         payload["parse_failure_count"] = int(count)
         payload["language_insights"] = self.get_run_data("language_insights", [])
+        payload["excluded_mappings"] = self.get_run_data("excluded_mappings", [])
         return payload
 
     def module_logs(self, module_id: str, limit: int, offset: int = 0) -> list[LogCall]:
@@ -512,6 +532,7 @@ class RunResultStore:
                 "ai_traces": traces,
                 "language_insights": self.get_run_data("language_insights", []),
                 "parse_failures": failures,
+                "excluded_mappings": self.get_run_data("excluded_mappings", []),
             }
 
     def close_module_results(self, module_id: str) -> None:
@@ -691,6 +712,9 @@ def report_from_dict(payload: dict[str, Any]) -> ScanReport:
         ai_traces=[AiTrace(**item) for item in payload.get("ai_traces", [])],
         language_insights=list(payload.get("language_insights", [])),
         parse_failures=[ParseFailure(**item) for item in payload.get("parse_failures", [])],
+        excluded_mappings=[
+            ExcludedMapping(**item) for item in payload.get("excluded_mappings", [])
+        ],
     )
 
 

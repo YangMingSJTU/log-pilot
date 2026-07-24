@@ -30,6 +30,7 @@ export function mountLegacyController(): void {const esc = value => String(value
       issueTotal: 0,
       issueLoading: false,
       scanPlan: null,
+      pendingExcludedMappings: [],
       planRuntime: null,
       planPath: "",
       appliedIssueIds: new Set(),
@@ -104,6 +105,7 @@ export function mountLegacyController(): void {const esc = value => String(value
     const batchApplyButton = document.querySelector("#batchApplyButton");
     const snapshotBanner = document.querySelector("#snapshotBanner");
     const coverageBanner = document.querySelector("#coverageBanner");
+    const mappingBanner = document.querySelector("#mappingBanner");
     const rollbackButton = document.querySelector("#rollbackButton");
     const rescanButton = document.querySelector("#rescanButton");
     const applyDialog = document.querySelector("#applyDialog");
@@ -146,6 +148,7 @@ export function mountLegacyController(): void {const esc = value => String(value
     const confirmPresetButton = document.querySelector("#confirmPresetButton");
     const planDialog = document.querySelector("#planDialog");
     const planSummary = document.querySelector("#planSummary");
+    const planExclusions = document.querySelector("#planExclusions");
     const planModules = document.querySelector("#planModules");
     const planSelectionSummary = document.querySelector("#planSelectionSummary");
     const closePlanDialog = document.querySelector("#closePlanDialog");
@@ -580,7 +583,7 @@ export function mountLegacyController(): void {const esc = value => String(value
         }
         const runtime = selectedRuntime();
         if (!runtime) throw new Error("没有可用运行时，请先在运行时页面检查 Codex 或 Claude");
-        if (plan.large_repository && plan.modules.length > 1) {
+        if ((plan.large_repository && plan.modules.length > 1) || (plan.excluded_mappings || []).length) {
           openScanPlan(plan, target, runtime);
           scanButton.disabled = false;
           return;
@@ -598,7 +601,7 @@ export function mountLegacyController(): void {const esc = value => String(value
 
     async function submitPlannedScan(target, runtime, plan, moduleIds) {
       closeScanPlan();
-      resetReportForScan();
+      resetReportForScan(plan.excluded_mappings || []);
       setScanning(true);
       showToast(`已通过 ${runtime.name} 启动后台分析`, "info");
       try {
@@ -636,9 +639,11 @@ export function mountLegacyController(): void {const esc = value => String(value
       state.planPath = path;
       state.planRuntime = runtime;
       planSummary.innerHTML = `
-        <div class="plan-stat"><span>源码文件</span><strong>${esc(plan.source_files)}</strong></div>
+        <div class="plan-stat"><span>可分析文件</span><strong>${esc(plan.selected_files)}</strong></div>
         <div class="plan-stat"><span>仓库体积</span><strong>${esc(formatBytes(plan.total_bytes))}</strong></div>
-        <div class="plan-stat"><span>目录模块</span><strong>${esc(plan.modules.length)}</strong></div>`;
+        <div class="plan-stat"><span>目录模块</span><strong>${esc(plan.modules.length)}</strong></div>
+        <div class="plan-stat"><span>已排除映射</span><strong>${esc((plan.excluded_mappings || []).length)}</strong></div>`;
+      renderPlanExclusions(plan.excluded_mappings || []);
       planModules.innerHTML = plan.modules.map(module => `
         <label class="plan-module">
           <input type="checkbox" data-plan-module="${esc(module.id)}" ${module.recommended ? "checked" : ""}>
@@ -651,6 +656,19 @@ export function mountLegacyController(): void {const esc = value => String(value
 
     function closeScanPlan() {
       planDialog.classList.add("hidden");
+    }
+
+    function renderPlanExclusions(mappings) {
+      if (!mappings.length) {
+        planExclusions.classList.add("hidden");
+        planExclusions.innerHTML = "";
+        return;
+      }
+      const visible = mappings.slice(0, 4).map(mapping => `
+        <span><code>${esc(mapping.path)}</code> &rarr; <code>${esc(mapping.target)}</code></span>`).join("");
+      const remaining = mappings.length > 4 ? `<span>其余 ${mappings.length - 4} 个映射目录将在结果中列出。</span>` : "";
+      planExclusions.classList.remove("hidden");
+      planExclusions.innerHTML = `<strong>检测到 ${mappings.length} 个目录映射，分析时将排除</strong><div class="mapping-list">${visible}${remaining}</div>`;
     }
 
     function setPlanSelection(mode) {
@@ -787,7 +805,7 @@ export function mountLegacyController(): void {const esc = value => String(value
       }
     }
 
-    function resetReportForScan() {
+    function resetReportForScan(excludedMappings = []) {
       state.report = null;
       state.reportActionable = false;
       state.patch = "";
@@ -795,6 +813,7 @@ export function mountLegacyController(): void {const esc = value => String(value
       state.scanJobId = "";
       state.scanReportVersion = -1;
       state.scanCancelRequested = false;
+      state.pendingExcludedMappings = excludedMappings;
       state.selectedGroups = new Set();
       state.expandedGroups = new Set();
       state.collapsedFiles = new Set();
@@ -818,6 +837,7 @@ export function mountLegacyController(): void {const esc = value => String(value
       collapseAllButton.disabled = true;
       batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
+      renderMappingBanner(excludedMappings);
       coverageBanner.classList.add("hidden");
       scanProgress.classList.remove("hidden", "failed", "completed");
       incrementalNote.classList.add("hidden");
@@ -929,7 +949,15 @@ export function mountLegacyController(): void {const esc = value => String(value
         score_status: "ai_incomplete",
         ai_status: "running"
       };
-      if (!state.report) state.report = { summary, logs: [], issues: [], parse_failures: [], language_insights: [], ai_traces: [] };
+      if (!state.report) state.report = {
+        summary,
+        logs: [],
+        issues: [],
+        parse_failures: [],
+        excluded_mappings: state.pendingExcludedMappings,
+        language_insights: [],
+        ai_traces: []
+      };
       else state.report.summary = summary;
       renderMetrics(summary);
     }
@@ -959,9 +987,11 @@ export function mountLegacyController(): void {const esc = value => String(value
         logs: [],
         issues: [],
         parse_failures: detail.parse_failures || [],
+        excluded_mappings: detail.excluded_mappings || [],
         language_insights: detail.language_insights || [],
         ai_traces: []
       };
+      state.pendingExcludedMappings = state.report.excluded_mappings;
       updateResultModules(detail.modules || []);
       renderReport(state.report);
       state.reportActionable = true;
@@ -1568,6 +1598,7 @@ export function mountLegacyController(): void {const esc = value => String(value
 
     function renderEmpty() {
       state.report = null;
+      state.pendingExcludedMappings = [];
       state.reportActionable = false;
       state.patch = "";
       state.activeRunId = "";
@@ -1595,6 +1626,7 @@ export function mountLegacyController(): void {const esc = value => String(value
       batchApplyButton.disabled = true;
       batchBar.classList.add("hidden");
       snapshotBanner.classList.add("hidden");
+      mappingBanner.classList.add("hidden");
       coverageBanner.classList.add("hidden");
       scanProgress.classList.add("hidden");
       incrementalNote.classList.add("hidden");
@@ -1604,6 +1636,8 @@ export function mountLegacyController(): void {const esc = value => String(value
 
     function renderNoSourcePlan(plan) {
       renderEmpty();
+      state.pendingExcludedMappings = plan?.excluded_mappings || [];
+      renderMappingBanner(state.pendingExcludedMappings);
       const discovered = Number(plan?.source_files || 0);
       const message = discovered
         ? `发现 ${discovered} 个源码候选，但没有可分析文件。请检查 .logpilot.yaml 扩展名配置或超大文件限制。`
@@ -1644,7 +1678,25 @@ export function mountLegacyController(): void {const esc = value => String(value
 
     function renderMetrics(summary) {
       document.querySelector("#metrics").innerHTML = summaryMarkup(summary);
+      renderMappingBanner(state.report?.excluded_mappings || []);
       renderCoverageBanner(summary);
+    }
+
+    function renderMappingBanner(mappings) {
+      if (!mappings.length) {
+        mappingBanner.classList.add("hidden");
+        mappingBanner.innerHTML = "";
+        return;
+      }
+      const visible = mappings.slice(0, 5).map(mapping => `
+        <span><code>${esc(mapping.path)}</code> &rarr; <code>${esc(mapping.target)}</code> · ${esc(mappingReasonLabel(mapping.reason))}</span>`).join("");
+      const remaining = mappings.length > 5 ? `<span>其余 ${mappings.length - 5} 个映射目录已排除。</span>` : "";
+      mappingBanner.classList.remove("hidden");
+      mappingBanner.innerHTML = `<strong>检测到 ${mappings.length} 个目录映射，已排除</strong><div class="mapping-list">${visible}${remaining}<span>当前分析结果不包含以上目录。</span></div>`;
+    }
+
+    function mappingReasonLabel(reason) {
+      return ({ junction: "Junction", symlink: "目录符号链接", reparse_point: "重解析目录" })[reason] || "目录映射";
     }
 
     function summaryMarkup(summary) {
@@ -1716,9 +1768,11 @@ export function mountLegacyController(): void {const esc = value => String(value
       const parseFailures = state.report?.parse_failures || [];
       const unrecognized = summary.unrecognized_extensions || {};
       const complete = summary.coverage_status === "complete";
-      const fullyHealthyContext = complete && summary.ai_status === "complete" && ["scored", "scoped"].includes(summary.score_status);
+      const mappingCount = Number(summary.excluded_mapping_count || 0);
+      const unsupportedCount = Number(summary.unsupported_files || 0);
+      const fullyHealthyContext = complete && !mappingCount && !unsupportedCount && summary.ai_status === "complete" && ["scored", "scoped"].includes(summary.score_status);
       coverageBanner.classList.toggle("hidden", fullyHealthyContext);
-      coverageBanner.classList.toggle("complete", fullyHealthyContext);
+      coverageBanner.classList.toggle("complete", complete && parseFailures.length === 0);
       coverageBanner.classList.toggle("failure", parseFailures.length > 0);
       if (parseFailures.length) {
         const visible = parseFailures.slice(0, 5).map(failure => {
@@ -1734,15 +1788,19 @@ export function mountLegacyController(): void {const esc = value => String(value
         }).join("");
         const remaining = parseFailures.length > 5 ? `<span>其余 ${parseFailures.length - 5} 个失败文件请查看报告。</span>` : "";
         coverageBanner.innerHTML = `<strong>有 ${parseFailures.length} 个文件解析失败</strong><div class="coverage-failure-list">${visible}${remaining}</div>`;
-      } else if (unsupported.length || Object.keys(unrecognized).length) {
+      } else if (summary.coverage_status === "partial" || failed.length) {
+        const discovered = summary.discovered_files || 0;
+        coverageBanner.innerHTML = `<strong>可分析文件覆盖不足</strong>：已分析 ${esc(summary.files_scanned)} / ${esc(discovered)} 个文件。`;
+      } else if (unsupported.length || Object.keys(unrecognized).length || mappingCount) {
         const details = unsupported.map(item => `${item.label} ${item.discovered_files} 个文件`);
         Object.entries(unrecognized).forEach(([extension, count]) => details.push(`未知扩展 ${extension} ${count} 个文件`));
-        const detail = details.join("、");
+        if (mappingCount) details.push(`${mappingCount} 个映射目录`);
+        const detail = details.join("、") || `${unsupportedCount} 个不支持文件`;
         const insightApis = [...new Set((state.report?.language_insights || []).flatMap(item => item.logging_apis || []))].slice(0, 6);
         const insightText = insightApis.length ? ` AI 抽样发现日志接口：${insightApis.map(esc).join("、")}；这些线索不计入覆盖率。` : "";
-        coverageBanner.innerHTML = `<strong>分析覆盖不足</strong>：${esc(detail)}暂不支持，当前评分不能代表整个仓库。${insightText}`;
-      } else if (failed.length) {
-        coverageBanner.innerHTML = `<strong>部分源码解析失败</strong>：${esc(failed.map(item => `${item.label} ${item.failed_files} 个`).join("、"))}。`;
+        const discovered = summary.discovered_files || 0;
+        const coverageText = discovered ? `可分析文件覆盖 ${esc(summary.files_scanned)} / ${esc(discovered)}（${esc(Math.round(Number(summary.coverage_ratio || 0) * 100))}%）` : "没有可分析文件";
+        coverageBanner.innerHTML = `<strong>${coverageText}</strong>：未纳入分析 ${esc(detail)}。${insightText}`;
       } else if (summary.ai_status === "partial") {
         coverageBanner.innerHTML = `<strong>AI 分析未完整完成</strong>：本地规则结果已保留，建议重新分析失败批次。`;
       } else if (summary.ai_status === "skipped") {

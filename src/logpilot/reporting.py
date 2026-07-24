@@ -5,7 +5,17 @@ from pathlib import Path
 from typing import Mapping
 
 from .languages import LANGUAGE_SPECS
-from .models import AiTrace, Issue, LanguageCoverage, LogCall, ParseFailure, ScanReport, ScanSummary, Severity
+from .models import (
+    AiTrace,
+    ExcludedMapping,
+    Issue,
+    LanguageCoverage,
+    LogCall,
+    ParseFailure,
+    ScanReport,
+    ScanSummary,
+    Severity,
+)
 
 
 def build_report(
@@ -23,6 +33,7 @@ def build_report(
     ai_status: str | None = None,
     language_insights: list[dict[str, object]] | None = None,
     parse_failures: list[ParseFailure] | None = None,
+    excluded_mappings: list[ExcludedMapping] | None = None,
 ) -> ScanReport:
     severity_counts = {severity.value: 0 for severity in Severity}
     for issue in issues:
@@ -32,15 +43,23 @@ def build_report(
     failed_counts = dict(failed_language_counts or {})
     unrecognized_counts = dict(unrecognized_extension_counts or {})
     unrecognized_files = sum(unrecognized_counts.values())
-    discovered_files = sum(discovered_counts.values()) + unrecognized_files or files_scanned
-    failed_files = sum(failed_counts.values())
-    coverage_ratio = round(files_scanned / discovered_files, 4) if discovered_files else 0.0
     unsupported_files = unrecognized_files + sum(
         discovered_counts.get(spec.id, 0)
         for spec in LANGUAGE_SPECS
         if not spec.analyzable
     )
-    coverage_status = _coverage_status(discovered_files, files_scanned, failed_files, coverage_ratio)
+    discovered_files = sum(
+        discovered_counts.get(spec.id, 0)
+        for spec in LANGUAGE_SPECS
+        if spec.analyzable
+    ) or files_scanned
+    failed_files = sum(failed_counts.values())
+    coverage_ratio = round(files_scanned / discovered_files, 4) if discovered_files else 0.0
+    coverage_status = (
+        "unsupported"
+        if discovered_files == 0 and unsupported_files
+        else _coverage_status(discovered_files, files_scanned, failed_files, coverage_ratio)
+    )
     resolved_ai_status = ai_status or _ai_status(ai_traces)
     score_status = _score_status(logs, coverage_status, analysis_scope, resolved_ai_status)
     score = _score(severity_counts) if score_status in {"scored", "scoped", "local_only"} else None
@@ -71,6 +90,7 @@ def build_report(
         unsupported_files=unsupported_files,
         unrecognized_files=unrecognized_files,
         failed_files=failed_files,
+        excluded_mapping_count=len(excluded_mappings or []),
         coverage_ratio=coverage_ratio,
         coverage_status=coverage_status,
         analysis_scope=analysis_scope,
@@ -86,6 +106,7 @@ def build_report(
         ai_traces=ai_traces,
         language_insights=list(language_insights or []),
         parse_failures=list(parse_failures or []),
+        excluded_mappings=list(excluded_mappings or []),
     )
 
 
@@ -112,6 +133,7 @@ def render_markdown(report: ScanReport) -> str:
         f"- AI status: {summary.ai_status}",
         f"- Logs found: {summary.log_count}",
         f"- Issues found: {summary.issue_count}",
+        f"- Excluded mappings: {summary.excluded_mapping_count}",
         f"- Severity: high={summary.severity_counts.get('high', 0)}, "
         f"medium={summary.severity_counts.get('medium', 0)}, low={summary.severity_counts.get('low', 0)}",
         "",
@@ -125,6 +147,11 @@ def render_markdown(report: ScanReport) -> str:
         lines.append(
             f"- `{failure.file_path}` `{failure.error_kind}` - {failure.message}{exit_code}"
         )
+    lines.extend(["", "## Excluded mappings", ""])
+    if not report.excluded_mappings:
+        lines.append("No mapped directories excluded.")
+    for mapping in report.excluded_mappings:
+        lines.append(f"- `{mapping.path}` -> `{mapping.target}` ({mapping.reason})")
     lines.extend(["", "## Issues", ""])
     if not report.issues:
         lines.append("No issues found.")

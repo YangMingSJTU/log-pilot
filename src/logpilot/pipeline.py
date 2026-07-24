@@ -435,15 +435,20 @@ def _build_summary(
     language_mode: str,
 ) -> ScanSummary:
     files_scanned = int(counts["files_scanned"])
-    discovered_files = int(plan.source_files)
+    discovered_files = int(plan.selected_files)
     failed_files = sum(counts["failed_languages"].values())
+    unsupported = sum(
+        plan.discovered_languages.get(spec.id, 0)
+        for spec in LANGUAGE_SPECS
+        if not spec.analyzable
+    ) + sum(plan.unrecognized_extensions.values())
     coverage_ratio = round(files_scanned / discovered_files, 4) if discovered_files else 0.0
     selected_all = len(modules) == len(plan.modules)
     analysis_scope = "custom" if language_mode == "custom" else (
         "repository" if selected_all else "selected_modules"
     )
     if discovered_files == 0:
-        coverage_status = "no_source"
+        coverage_status = "unsupported" if unsupported else "no_source"
     elif files_scanned == 0:
         coverage_status = "unsupported"
     elif coverage_ratio >= 0.95 and failed_files == 0 and selected_all and not plan.skipped_large_files:
@@ -482,11 +487,6 @@ def _build_summary(
                 log_count=counts["log_languages"].get(spec.id, 0),
             )
         )
-    unsupported = sum(
-        plan.discovered_languages.get(spec.id, 0)
-        for spec in LANGUAGE_SPECS
-        if not spec.analyzable
-    ) + sum(plan.unrecognized_extensions.values())
     return ScanSummary(
         repository=str(repo_root),
         score=score,
@@ -498,6 +498,7 @@ def _build_summary(
         unsupported_files=unsupported,
         unrecognized_files=sum(plan.unrecognized_extensions.values()),
         failed_files=failed_files + len(plan.skipped_large_files),
+        excluded_mapping_count=len(plan.excluded_mappings),
         coverage_ratio=coverage_ratio,
         coverage_status=coverage_status,
         analysis_scope=analysis_scope,
@@ -522,6 +523,7 @@ def _write_run_metadata(store: RunResultStore, summary: ScanSummary, runtime_id:
         "analysis_scope": summary.analysis_scope,
         "ai_status": summary.ai_status,
         "parse_failure_count": summary.failed_files,
+        "excluded_mapping_count": summary.excluded_mapping_count,
         "log_count": summary.log_count,
         "issue_count": summary.issue_count,
         "severity_counts": summary.severity_counts,
@@ -542,12 +544,13 @@ def _write_running_metadata(store: RunResultStore, plan: ScanPlan, runtime_id: s
         "score": None,
         "score_status": "running",
         "files_scanned": 0,
-        "discovered_files": plan.source_files,
+        "discovered_files": plan.selected_files,
         "coverage_ratio": 0,
         "coverage_status": "running",
         "analysis_scope": "repository" if len(modules) == len(plan.modules) else "selected_modules",
         "ai_status": "running",
         "parse_failure_count": 0,
+        "excluded_mapping_count": len(plan.excluded_mappings),
         "log_count": 0,
         "issue_count": 0,
         "severity_counts": {"high": 0, "medium": 0, "low": 0},

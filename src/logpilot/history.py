@@ -82,6 +82,7 @@ def _metadata_for(report: ScanReport, run_id: str) -> dict[str, Any]:
         "coverage_status": summary.coverage_status,
         "ai_status": summary.ai_status,
         "parse_failure_count": len(report.parse_failures),
+        "excluded_mapping_count": len(report.excluded_mappings),
         "log_count": summary.log_count,
         "issue_count": summary.issue_count,
         "severity_counts": summary.severity_counts,

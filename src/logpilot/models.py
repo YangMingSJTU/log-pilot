@@ -64,6 +64,13 @@ class ParseFailure:
 
 
 @dataclass(slots=True)
+class ExcludedMapping:
+    path: str
+    target: str
+    reason: str
+
+
+@dataclass(slots=True)
 class FixProposal:
     id: str
     action: str
@@ -123,6 +130,7 @@ class ScanSummary:
     unsupported_files: int = 0
     unrecognized_files: int = 0
     failed_files: int = 0
+    excluded_mapping_count: int = 0
     coverage_ratio: float = 0.0
     coverage_status: str = "complete"
     analysis_scope: str = "repository"
@@ -140,6 +148,7 @@ class ScanReport:
     ai_traces: list[AiTrace] = field(default_factory=list)
     language_insights: list[dict[str, Any]] = field(default_factory=list)
     parse_failures: list[ParseFailure] = field(default_factory=list)
+    excluded_mappings: list[ExcludedMapping] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
